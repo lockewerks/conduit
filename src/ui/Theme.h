@@ -48,6 +48,7 @@ struct Theme {
     ImVec4 code_bg          = {0.08f, 0.08f, 0.11f, 1.0f};
 
     // reactions
+    float reaction_badge_height = 18.0f;
     ImVec4 reaction_bg        = {0.18f, 0.18f, 0.24f, 1.0f};
     ImVec4 reaction_bg_active = {0.22f, 0.30f, 0.45f, 1.0f};
     ImVec4 reaction_text      = {0.70f, 0.70f, 0.75f, 1.0f};
