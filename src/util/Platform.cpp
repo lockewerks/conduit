@@ -5,6 +5,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <shlobj.h>
+#include <shellapi.h>
 #pragma comment(lib, "shell32.lib")
 #endif
 
