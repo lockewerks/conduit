@@ -1,0 +1,58 @@
+# build output
+build/
+out/
+cmake-build-*/
+
+# vcpkg (bootstrapped locally)
+vcpkg/
+vcpkg_installed/
+
+# IDE garbage
+.vs/
+.vscode/
+*.user
+*.suo
+*.sln
+*.vcxproj*
+.idea/
+*.swp
+*.swo
+*~
+
+# compiled objects
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.pdb
+*.ilk
+*.exp
+
+# cmake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+install_manifest.txt
+
+# OS junk
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# secrets - never commit these
+*.env
+tokens.enc
+credentials.json
+
+# logs
+*.log
+
+# cache dirs
+.cache/

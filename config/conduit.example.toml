@@ -1,0 +1,58 @@
+[general]
+font_size = 14.0
+font = "fonts/JetBrainsMono-Regular.ttf"
+font_bold = "fonts/JetBrainsMono-Bold.ttf"
+font_italic = "fonts/JetBrainsMono-Italic.ttf"
+theme = "themes/weechat_dark.toml"
+log_level = "info"
+log_file = "~/.config/conduit/conduit.log"
+
+[ui]
+show_buffer_list = true
+show_nick_list = true
+buffer_list_width = 180
+nick_list_width = 160
+image_max_width = 360
+image_max_height = 240
+timestamp_format = "%H:%M"
+show_seconds = false
+nick_alignment = "right"
+nick_max_width = 15
+show_avatars = false
+animate_gifs = true
+show_inline_images = true
+buffer_sort = "activity"
+
+[notifications]
+enabled = true
+notify_on = "mentions"
+sound_enabled = false
+dnd_start = ""
+dnd_end = ""
+
+[network]
+connect_timeout = 10
+request_timeout = 30
+max_reconnect_backoff = 30
+proxy = ""
+http_proxy = ""
+
+[cache]
+max_file_cache_mb = 500
+max_messages_per_channel = 10000
+prune_days = 0
+
+[keybindings]
+# override defaults here if you want
+# switch_next_buffer = "Ctrl+Tab"
+# switch_prev_buffer = "Ctrl+Shift+Tab"
+
+# add your org(s) here
+# tokens get stored in your OS keychain after first entry, not in this file
+[[org]]
+name = "MyWorkspace"
+app_token = ""
+user_token = ""
+bot_token = ""
+auto_connect = true
+auto_open = ["#general"]

@@ -1,0 +1,12 @@
+{
+  "name": "conduit",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "sdl2",
+    "curl",
+    "sqlite3",
+    "libwebsockets",
+    "nlohmann-json",
+    "giflib"
+  ]
+}
