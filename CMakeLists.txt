@@ -60,8 +60,10 @@ target_include_directories(imgui_lib PUBLIC
 target_link_libraries(imgui_lib PUBLIC SDL2::SDL2 OpenGL::GL)
 
 # --- main executable ---
+# no WIN32 subsystem for now so we get console output for debugging
+# flip to WIN32 for final release when we don't want the console window
 file(GLOB_RECURSE CONDUIT_SOURCES src/*.cpp)
-add_executable(conduit WIN32 ${CONDUIT_SOURCES})
+add_executable(conduit ${CONDUIT_SOURCES})
 
 target_include_directories(conduit PRIVATE
     src/
@@ -80,7 +82,14 @@ target_link_libraries(conduit PRIVATE
     websockets_shared
 )
 
-# copy assets to build dir so the exe can find them
+# MSVC multi-config generators put output in Debug/ or Release/ subdirs
+# we need assets next to the exe regardless of config
+# copy assets into each possible output directory
+foreach(CONFIG_TYPE Debug Release RelWithDebInfo MinSizeRel)
+    file(COPY assets/ DESTINATION ${CMAKE_BINARY_DIR}/${CONFIG_TYPE}/assets/)
+    file(COPY config/ DESTINATION ${CMAKE_BINARY_DIR}/${CONFIG_TYPE}/config/)
+endforeach()
+# also copy to build root for single-config generators (makefiles, ninja)
 file(COPY assets/ DESTINATION ${CMAKE_BINARY_DIR}/assets/)
 file(COPY config/ DESTINATION ${CMAKE_BINARY_DIR}/config/)
 

@@ -96,23 +96,42 @@ bool Application::initImGui() {
     return true;
 }
 
+// figure out where the executable lives so we can find assets relative to it
+static std::string getExeDir() {
+#ifdef _WIN32
+    char buf[MAX_PATH] = {};
+    GetModuleFileNameA(NULL, buf, MAX_PATH);
+    std::string path(buf);
+    auto pos = path.find_last_of("\\/");
+    return (pos != std::string::npos) ? path.substr(0, pos) : ".";
+#else
+    // good enough for linux/mac
+    return ".";
+#endif
+}
+
 void Application::loadFonts() {
     ImGuiIO& io = ImGui::GetIO();
 
-    // try to find the font relative to the executable first, then assets/
-    std::string font_path = "assets/fonts/JetBrainsMono-Regular.ttf";
+    std::string exe_dir = getExeDir();
 
-    if (!std::filesystem::exists(font_path)) {
-        // maybe we're running from the build directory
-        font_path = "../assets/fonts/JetBrainsMono-Regular.ttf";
+    // search order: next to exe, one level up from exe, cwd
+    std::vector<std::string> search_paths = {
+        exe_dir + "/assets/fonts/JetBrainsMono-Regular.ttf",
+        exe_dir + "/../assets/fonts/JetBrainsMono-Regular.ttf",
+        "assets/fonts/JetBrainsMono-Regular.ttf",
+        "../assets/fonts/JetBrainsMono-Regular.ttf",
+    };
+
+    for (auto& path : search_paths) {
+        if (std::filesystem::exists(path)) {
+            io.Fonts->AddFontFromFileTTF(path.c_str(), 14.0f);
+            LOG_INFO("loaded JetBrains Mono from " + path);
+            return;
+        }
     }
 
-    if (std::filesystem::exists(font_path)) {
-        io.Fonts->AddFontFromFileTTF(font_path.c_str(), 14.0f);
-        LOG_INFO("loaded JetBrains Mono from " + font_path);
-    } else {
-        LOG_WARN("couldn't find JetBrains Mono, falling back to imgui default font (gross)");
-    }
+    LOG_WARN("couldn't find JetBrains Mono anywhere, falling back to imgui default font (gross)");
 }
 
 void Application::run() {

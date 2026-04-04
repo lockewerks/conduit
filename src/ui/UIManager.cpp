@@ -4,7 +4,8 @@
 namespace conduit::ui {
 
 UIManager::UIManager() {
-    theme_.apply();
+    // don't apply theme here - imgui context doesn't exist yet
+    // theme gets applied in Application::init() after ImGui::CreateContext()
 }
 
 void UIManager::render() {
