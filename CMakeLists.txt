@@ -5,6 +5,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# windows min/max macros are the bane of existence
+if(WIN32)
+    add_definitions(-DNOMINMAX -DWIN32_LEAN_AND_MEAN)
+endif()
+
 # options
 option(CONDUIT_BUILD_TESTS "Build test suite" ON)
 option(CONDUIT_USE_VCPKG "Use vcpkg for dependencies" ON)
@@ -15,9 +20,7 @@ find_package(OpenGL REQUIRED)
 find_package(CURL REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json REQUIRED)
-
-# libwebsockets is a pain to find_package on windows, we'll deal with it later
-# find_package(Libwebsockets REQUIRED)
+find_package(libwebsockets CONFIG REQUIRED)
 
 # --- header-only / small deps via FetchContent ---
 include(FetchContent)
@@ -74,6 +77,7 @@ target_link_libraries(conduit PRIVATE
     SQLite3::SQLite3
     nlohmann_json::nlohmann_json
     tomlplusplus::tomlplusplus
+    websockets_shared
 )
 
 # copy assets to build dir so the exe can find them
