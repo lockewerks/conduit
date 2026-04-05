@@ -3,6 +3,7 @@
 #include "slack/WebAPI.h"
 #include "slack/SlackAuth.h"
 #include "slack/SocketModeClient.h"
+#include "slack/SlackWebSocket.h"
 #include "slack/EventDispatcher.h"
 #include "slack/RateLimiter.h"
 #include "cache/Database.h"
@@ -92,7 +93,8 @@ private:
     AuthInfo auth_info_;
 
     std::unique_ptr<WebAPI> api_;
-    std::unique_ptr<SocketModeClient> socket_;
+    std::unique_ptr<SocketModeClient> socket_;       // socket mode (app token)
+    std::unique_ptr<SlackWebSocket> web_socket_;     // direct websocket (xoxc token)
     std::unique_ptr<EventDispatcher> dispatcher_;
     RateLimiter rate_limiter_;
 

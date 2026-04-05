@@ -88,10 +88,6 @@ private:
     bool needs_channel_sync_ = true;
     bool needs_message_sync_ = true;
 
-    // periodic polling fallback in case socket mode isn't delivering events
-    std::chrono::steady_clock::time_point last_poll_time_;
-    std::string last_known_ts_; // ts of the most recent message we've seen
-    bool poll_in_flight_ = false;
 
     // typing indicators from other users
     std::vector<std::pair<std::string, std::chrono::steady_clock::time_point>> typing_events_;

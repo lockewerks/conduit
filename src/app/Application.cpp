@@ -889,32 +889,7 @@ void Application::run() {
             ui_.statusBar().setConnectionState(client_->connectionState());
         }
 
-        // fast message polling. with a user token in a managed workspace
-        // there's no websocket push available (rtm is deprecated, socket mode
-        // needs bot event subscriptions). so we poll. 2 seconds, background
-        // thread, only fetches 1 message to check if anything changed, then
-        // grabs the full batch if it did. tight and efficient.
-        if (client_ && client_->isConnected() && !active_channel_.empty() && !poll_in_flight_) {
-            auto now_poll = std::chrono::steady_clock::now();
-            if (now_poll - last_poll_time_ > std::chrono::seconds(2)) {
-                last_poll_time_ = now_poll;
-                poll_in_flight_ = true;
-                pool_->enqueue([this, ch = active_channel_]() {
-                    // check: fetch just 1 message to see if the channel has new content
-                    auto probe = client_->getHistory(ch, 1);
-                    if (!probe.empty() && probe.back().ts != last_known_ts_) {
-                        // something new — grab a proper batch
-                        last_known_ts_ = probe.back().ts;
-                        auto batch = client_->getHistory(ch, 30);
-                        if (!batch.empty()) {
-                            msg_cache_->store(ch, batch);
-                            needs_message_sync_ = true;
-                        }
-                    }
-                    poll_in_flight_ = false;
-                });
-            }
-        }
+        // no more polling! websocket delivers events in real-time now.
 
         // push any decoded images/gifs to the GPU (GL calls must happen on main thread)
         image_renderer_.uploadPending();

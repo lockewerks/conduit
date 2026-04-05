@@ -36,8 +36,10 @@ bool SlackClient::connect() {
     // then fetch fresh data from the API
     bootstrapData();
 
-    // start socket mode if we have an app token
+    // real-time events: try socket mode first (app token), fall back to
+    // direct websocket (same as the browser client uses)
     if (!config_.app_token.empty()) {
+        // socket mode: app token + bot event subscriptions
         socket_ = std::make_unique<SocketModeClient>(config_.app_token);
         socket_->setEventCallback([this](const nlohmann::json& payload) {
             auto event = dispatcher_->dispatch(payload);
@@ -45,13 +47,75 @@ bool SlackClient::connect() {
                 event_queue_.push(std::move(*event));
             }
         });
-
         if (!socket_->connect()) {
-            LOG_WARN("socket mode failed to connect - real-time events won't work");
-            // don't fail the whole connection, REST still works
+            LOG_WARN("socket mode failed, falling back to direct websocket");
         }
-    } else {
-        LOG_WARN("no app token for " + config_.name + " - no real-time events");
+    }
+
+    // if no socket mode (or it failed), use direct websocket like the browser
+    if (!socket_ || !socket_->isConnected()) {
+        web_socket_ = std::make_unique<SlackWebSocket>(config_.user_token, config_.d_cookie);
+        web_socket_->setMessageCallback([this](const nlohmann::json& msg) {
+            // the web client websocket sends events directly, not wrapped
+            // in socket mode envelopes. the "type" field is at the top level.
+            std::string type = msg.value("type", "");
+
+            if (type == "message") {
+                SlackEvent e;
+                std::string subtype = msg.value("subtype", "");
+                if (subtype == "message_changed") {
+                    e.type = SlackEvent::Type::MessageChanged;
+                    if (msg.contains("message")) {
+                        e.message = msg["message"].get<Message>();
+                    }
+                } else if (subtype == "message_deleted") {
+                    e.type = SlackEvent::Type::MessageDeleted;
+                    e.ts = msg.value("deleted_ts", "");
+                } else {
+                    e.type = SlackEvent::Type::MessageNew;
+                    try { e.message = msg.get<Message>(); } catch (...) {}
+                }
+                e.channel = msg.value("channel", "");
+                e.user = msg.value("user", "");
+                e.ts = msg.value("ts", "");
+                event_queue_.push(std::move(e));
+            } else if (type == "reaction_added" || type == "reaction_removed") {
+                SlackEvent e;
+                e.type = (type == "reaction_added") ? SlackEvent::Type::ReactionAdded
+                                                     : SlackEvent::Type::ReactionRemoved;
+                e.user = msg.value("user", "");
+                if (msg.contains("item")) {
+                    e.channel = msg["item"].value("channel", "");
+                    e.ts = msg["item"].value("ts", "");
+                }
+                Reaction r;
+                r.emoji_name = msg.value("reaction", "");
+                r.count = 1;
+                r.users = {e.user};
+                e.reaction = r;
+                event_queue_.push(std::move(e));
+            } else if (type == "channel_marked") {
+                SlackEvent e;
+                e.type = SlackEvent::Type::ChannelMarked;
+                e.channel = msg.value("channel", "");
+                event_queue_.push(std::move(e));
+            } else if (type == "user_typing") {
+                SlackEvent e;
+                e.type = SlackEvent::Type::TypingStart;
+                e.channel = msg.value("channel", "");
+                e.user = msg.value("user", "");
+                event_queue_.push(std::move(e));
+            } else if (type == "presence_change") {
+                SlackEvent e;
+                e.type = SlackEvent::Type::PresenceChange;
+                e.user = msg.value("user", "");
+                e.is_online = (msg.value("presence", "") == "active");
+                event_queue_.push(std::move(e));
+            }
+            // ignore types we don't care about (pref_change, etc)
+        });
+        web_socket_->connect();
+        LOG_INFO("direct websocket started (browser-style connection)");
     }
 
     // post a connection event
@@ -64,6 +128,10 @@ bool SlackClient::connect() {
 }
 
 void SlackClient::disconnect() {
+    if (web_socket_) {
+        web_socket_->disconnect();
+        web_socket_.reset();
+    }
     if (socket_) {
         socket_->disconnect();
         socket_.reset();
@@ -410,9 +478,10 @@ bool SlackClient::pollEvent(SlackEvent& event_out) {
 std::string SlackClient::connectionState() const {
     if (!api_) return "disconnected";
     if (socket_ && socket_->isConnected()) return "connected";
+    if (web_socket_ && web_socket_->isConnected()) return "connected";
+    if (web_socket_) return web_socket_->state();
     if (socket_) return socket_->state();
-    // no socket mode but API works fine — just say connected
-    return "connected";
+    return "connected"; // API works even without websocket
 }
 
 } // namespace conduit::slack
