@@ -63,11 +63,6 @@ bool Application::init() {
     setupTabCompletion();
     ui_.inputBar().setHistory(&input_history_);
 
-    // give the title bar the SDL window handle so it can drag/resize
-    ui_.titleBar().setWindow(window_);
-    // bump title bar height to fit window control buttons
-    ui_.layout().title_bar_height = 32.0f;
-
     connectToSlack();
 
     running_ = true;
@@ -91,15 +86,14 @@ bool Application::initSDL() {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
-    // plain borderless window. no Win32 style hacking — that was causing
-    // ghost windows, broken keyboard input, and general misery.
-    // SDL handles borderless just fine, we handle resize via the hit test.
+    // normal OS-decorated window. borderless was an unending nightmare of
+    // ghost windows, broken keyboard, fullscreen chaos. the OS can handle
+    // its own damn title bar.
     window_ = SDL_CreateWindow(
         "Conduit",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         window_width_, window_height_,
-        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS |
-        SDL_WINDOW_ALLOW_HIGHDPI);
+        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
 
     if (!window_) {
         LOG_ERROR(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
@@ -861,22 +855,6 @@ void Application::run() {
         ImGui::NewFrame();
 
         ui_.render();
-
-        // handle custom title bar window controls
-        if (ui_.titleBar().wantsClose()) {
-            running_ = false;
-        }
-        if (ui_.titleBar().wantsMinimize()) {
-            SDL_MinimizeWindow(window_);
-        }
-        if (ui_.titleBar().wantsMaximize()) {
-            Uint32 flags = SDL_GetWindowFlags(window_);
-            if (flags & SDL_WINDOW_MAXIMIZED) {
-                SDL_RestoreWindow(window_);
-            } else {
-                SDL_MaximizeWindow(window_);
-            }
-        }
 
         // right-click context menu actions
         if (ui_.wantsPasteImage()) {
