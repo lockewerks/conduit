@@ -28,12 +28,13 @@ void NickList::render(float x, float y, float width, float height, const Theme& 
         else away_count++;
     }
 
-    // summary line at the top
+    // summary line at the top - wraps if needed
     ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
-    std::string summary = std::to_string(online_count) + " online";
-    if (away_count > 0) summary += ", " + std::to_string(away_count) + " away";
-    ImGui::SetCursorPosX(8.0f);
+    std::string summary = std::to_string(online_count) + " on, " + std::to_string(away_count) + " away";
+    ImGui::SetCursorPosX(4.0f);
+    ImGui::PushTextWrapPos(width - 4.0f);
     ImGui::TextUnformatted(summary.c_str());
+    ImGui::PopTextWrapPos();
     ImGui::PopStyleColor();
 
     // thin separator under the count
@@ -69,7 +70,21 @@ void NickList::render(float x, float y, float width, float height, const Theme& 
 
         ImGui::PushStyleColor(ImGuiCol_Text, color);
         std::string display = nick.is_bot ? nick.name + " [bot]" : nick.name;
-        ImGui::TextUnformatted(display.c_str());
+        // truncate if too wide for the panel
+        float avail = width - ImGui::GetCursorPosX() - 4.0f;
+        float text_w = ImGui::CalcTextSize(display.c_str()).x;
+        if (text_w > avail && avail > 20.0f) {
+            float dots_w = ImGui::CalcTextSize("..").x;
+            std::string trunc;
+            for (size_t ci = 0; ci < display.size(); ci++) {
+                trunc += display[ci];
+                if (ImGui::CalcTextSize(trunc.c_str()).x >= avail - dots_w) break;
+            }
+            trunc += "..";
+            ImGui::TextUnformatted(trunc.c_str());
+        } else {
+            ImGui::TextUnformatted(display.c_str());
+        }
         ImGui::PopStyleColor();
 
         // a little breathing room between entries

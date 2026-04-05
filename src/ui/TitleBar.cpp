@@ -14,20 +14,32 @@ void TitleBar::render(float x, float y, float width, float height, const Theme& 
 
     float text_y = y + (height - ImGui::GetTextLineHeight()) * 0.5f;
 
-    // channel name + topic, weechat style: "[#channel] topic text here"
+    // channel name + topic, weechat style
     ImGui::SetCursorPos({x + 4.0f, text_y});
     ImGui::PushStyleColor(ImGuiCol_Text, theme.text_bright);
     std::string header = "[" + channel_name_ + "]";
     if (member_count_ > 0) header += "(" + std::to_string(member_count_) + ")";
+    // truncate if wider than the bar
+    float header_w = ImGui::CalcTextSize(header.c_str()).x;
+    float max_header_w = width * 0.4f;
+    if (header_w > max_header_w) {
+        // just show the channel name without member count
+        header = "[" + channel_name_ + "]";
+    }
     ImGui::TextUnformatted(header.c_str());
     ImGui::PopStyleColor();
 
     if (!topic_.empty()) {
-        ImGui::SameLine(0, 8.0f);
+        ImGui::SameLine(0, 4.0f);
         ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
-        ImGui::PushClipRect({p.x, p.y}, {p.x + width, p.y + height}, true);
-        ImGui::TextUnformatted(topic_.c_str());
-        ImGui::PopClipRect();
+        // clip topic to remaining space
+        float remaining = width - ImGui::GetCursorPosX() - 4.0f;
+        if (remaining > 30.0f) {
+            ImVec2 clip_min = ImGui::GetCursorScreenPos();
+            ImGui::PushClipRect(clip_min, {clip_min.x + remaining, clip_min.y + height}, true);
+            ImGui::TextUnformatted(topic_.c_str());
+            ImGui::PopClipRect();
+        }
         ImGui::PopStyleColor();
     }
 }

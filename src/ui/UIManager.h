@@ -15,17 +15,17 @@
 namespace conduit::ui {
 
 struct LayoutConfig {
-    float buffer_list_width = 180.0f;
-    float nick_list_width = 160.0f;
-    float input_bar_height = 22.0f;  // tight like a terminal
+    float buffer_list_width = 200.0f;
+    float nick_list_width = 180.0f;
+    float input_bar_height = 22.0f;
     float status_bar_height = 18.0f;
     float title_bar_height = 18.0f;
     float thread_panel_width = 350.0f;
 
     // min/max constraints for draggable panes
-    float buffer_list_min = 100.0f;
+    float buffer_list_min = 150.0f;  // enough to read channel names
     float buffer_list_max = 400.0f;
-    float nick_list_min = 80.0f;
+    float nick_list_min = 140.0f;    // enough to read usernames
     float nick_list_max = 350.0f;
     float thread_panel_min = 200.0f;
     float thread_panel_max = 600.0f;

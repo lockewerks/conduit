@@ -117,17 +117,23 @@ void BufferList::render(float x, float y, float width, float height, const Theme
             ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
         }
         {
-            // leave room for the unread badge if there is one
+            // truncate long channel names with ".." so they don't clip ugly
             float right_margin = (entry.unread_count > 0) ? 40.0f : 8.0f;
-            float clip_w = width - ImGui::GetCursorPosX() - right_margin;
-            if (clip_w > 0) {
-                ImVec2 clip_min = ImGui::GetCursorScreenPos();
-                ImVec2 clip_max = {clip_min.x + clip_w, clip_min.y + ImGui::GetTextLineHeight()};
-                ImGui::PushClipRect(clip_min, clip_max, true);
-            }
-            ImGui::TextUnformatted(entry.name.c_str());
-            if (clip_w > 0) {
-                ImGui::PopClipRect();
+            float avail_w = width - ImGui::GetCursorPosX() - right_margin;
+            float name_w = ImGui::CalcTextSize(entry.name.c_str()).x;
+            if (name_w <= avail_w || avail_w <= 0) {
+                ImGui::TextUnformatted(entry.name.c_str());
+            } else {
+                // find how many chars fit, then add ".."
+                float dots_w = ImGui::CalcTextSize("..").x;
+                float target_w = avail_w - dots_w;
+                std::string truncated;
+                for (size_t ci = 0; ci < entry.name.size(); ci++) {
+                    truncated += entry.name[ci];
+                    if (ImGui::CalcTextSize(truncated.c_str()).x >= target_w) break;
+                }
+                truncated += "..";
+                ImGui::TextUnformatted(truncated.c_str());
             }
         }
         ImGui::PopStyleColor();
