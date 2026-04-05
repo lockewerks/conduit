@@ -116,11 +116,18 @@ void GifRenderer::requestGif(const std::string& url, const std::string& auth_tok
 
         std::vector<uint8_t> data;
         struct curl_slist* headers = nullptr;
-        std::string auth = "Authorization: Bearer " + auth_token;
-        headers = curl_slist_append(headers, auth.c_str());
+
+        // only auth for slack URLs, not external CDNs
+        bool is_slack = (url.find("slack.com") != std::string::npos ||
+                         url.find("slack-edge.com") != std::string::npos);
+        if (is_slack) {
+            std::string auth = "Authorization: Bearer " + auth_token;
+            headers = curl_slist_append(headers, auth.c_str());
+        }
 
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        if (headers) curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "Conduit/0.1");
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, gifWriteCallback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &data);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);

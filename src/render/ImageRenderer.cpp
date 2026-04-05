@@ -176,15 +176,23 @@ void ImageRenderer::requestImage(const std::string& url, const std::string& auth
 
         std::vector<uint8_t> data;
         struct curl_slist* headers = nullptr;
-        std::string auth = "Authorization: Bearer " + auth_token;
-        headers = curl_slist_append(headers, auth.c_str());
+
+        // only add auth header for slack URLs - external CDNs (tenor, giphy)
+        // will reject or ignore our slack token
+        bool is_slack = (url.find("slack.com") != std::string::npos ||
+                         url.find("slack-edge.com") != std::string::npos);
+        if (is_slack) {
+            std::string auth = "Authorization: Bearer " + auth_token;
+            headers = curl_slist_append(headers, auth.c_str());
+        }
 
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        if (headers) curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, imgWriteCallback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &data);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "Conduit/0.1");
 
         CURLcode res = curl_easy_perform(curl);
         curl_slist_free_all(headers);

@@ -189,24 +189,56 @@ std::vector<Message> SlackClient::getHistory(const ChannelId& channel, int limit
                     LOG_DEBUG("msg has " + std::to_string(msg.files.size()) +
                               " files: " + msg.files[0].name + " (" + msg.files[0].mimetype + ")");
                 }
-                if (m.contains("attachments") && m["attachments"].is_array() && !m["attachments"].empty()) {
-                    auto& att = m["attachments"][0];
-                    std::string att_type = att.value("service_name", att.value("fallback", "unknown"));
-                    LOG_DEBUG("msg has attachment: " + att_type);
-                    // slack sends giphy/unfurled images as attachments, not files
-                    // pull them into the files array so our renderer sees them
+                // slack's attachment format is a nightmare. giphy gifs, unfurled
+                // images, and shared links all come through as "attachments" not "files".
+                // and the image_url can be at the top level OR nested inside blocks.
+                // we scan everything and promote any image URL we find into the files
+                // array so our renderer can actually display them.
+                if (m.contains("attachments") && m["attachments"].is_array()) {
                     for (auto& a : m["attachments"]) {
-                        std::string img_url = a.value("image_url", "");
+                        std::string img_url;
+                        int img_w = 0, img_h = 0;
+                        std::string title = a.value("fallback", "image");
+                        bool is_animated = false;
+
+                        // check top-level image_url first
+                        img_url = a.value("image_url", "");
+                        img_w = a.value("image_width", 0);
+                        img_h = a.value("image_height", 0);
+
+                        // if not there, dig into blocks (slack's newer format)
+                        if (img_url.empty() && a.contains("blocks") && a["blocks"].is_array()) {
+                            for (auto& block : a["blocks"]) {
+                                if (block.value("type", "") == "image") {
+                                    img_url = block.value("image_url", "");
+                                    img_w = block.value("image_width", 0);
+                                    img_h = block.value("image_height", 0);
+                                    is_animated = block.value("is_animated", false);
+                                    if (block.contains("title") && block["title"].is_object()) {
+                                        title = block["title"].value("text", title);
+                                    }
+                                    if (!img_url.empty()) break;
+                                }
+                            }
+                        }
+
                         if (!img_url.empty()) {
                             SlackFile sf;
-                            sf.name = a.value("title", a.value("fallback", "image"));
+                            sf.name = title;
                             sf.url_private = img_url;
-                            sf.thumb_360 = a.value("thumb_url", img_url);
-                            sf.mimetype = "image/gif"; // attachments with image_url are usually gifs
-                            sf.original_w = a.value("image_width", 0);
-                            sf.original_h = a.value("image_height", 0);
+                            sf.thumb_360 = img_url; // no separate thumb, use full URL
+                            sf.original_w = img_w;
+                            sf.original_h = img_h;
+                            // figure out if it's a gif or static image
+                            if (is_animated || img_url.find(".gif") != std::string::npos) {
+                                sf.mimetype = "image/gif";
+                            } else if (img_url.find(".png") != std::string::npos) {
+                                sf.mimetype = "image/png";
+                            } else {
+                                sf.mimetype = "image/jpeg";
+                            }
                             msg.files.push_back(sf);
-                            LOG_DEBUG("promoted attachment image to file: " + img_url.substr(0, 80));
+                            LOG_INFO("found image in attachment: " + img_url.substr(0, 80));
                         }
                     }
                 }
