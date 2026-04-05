@@ -411,7 +411,8 @@ std::string SlackClient::connectionState() const {
     if (!api_) return "disconnected";
     if (socket_ && socket_->isConnected()) return "connected";
     if (socket_) return socket_->state();
-    return "rest only";
+    // no socket mode but API works fine — just say connected
+    return "connected";
 }
 
 } // namespace conduit::slack

@@ -17,9 +17,9 @@ namespace conduit::ui {
 struct LayoutConfig {
     float buffer_list_width = 200.0f;
     float nick_list_width = 180.0f;
-    float input_bar_height = 22.0f;
-    float status_bar_height = 18.0f;
-    float title_bar_height = 18.0f;
+    float input_bar_height = 24.0f;
+    float status_bar_height = 20.0f;
+    float title_bar_height = 22.0f;
     float thread_panel_width = 350.0f;
 
     // min/max constraints for draggable panes

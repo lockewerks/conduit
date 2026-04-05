@@ -63,7 +63,8 @@ void UIManager::render() {
                              ImGuiWindowFlags_NoBringToFrontOnFocus |
                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
+    // tiny top padding so the info bar text doesn't kiss the window edge
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 2});
     ImGui::Begin("##conduit_main", nullptr, flags);
     ImGui::PopStyleVar();
 
