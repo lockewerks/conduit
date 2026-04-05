@@ -912,6 +912,11 @@ void Application::handleInputSubmit(const std::string& text) {
     pool_->enqueue([this, channel = active_channel_, msg = text]() {
         if (client_->sendMessage(channel, msg)) {
             LOG_DEBUG("sent message to " + channel);
+            // re-fetch history so we see our own message immediately
+            // can't rely on socket mode echoing it back fast enough
+            auto history = client_->getHistory(channel, 50);
+            msg_cache_->store(channel, history);
+            needs_message_sync_ = true;
         } else {
             LOG_ERROR("failed to send message");
         }
