@@ -91,4 +91,16 @@ void InputBar::render(float x, float y, float width, float height, const Theme& 
     ImGui::PopItemWidth();
 }
 
+void InputBar::pasteText(const std::string& text) {
+    if (text.empty()) return;
+    // append to whatever's already in the buffer
+    size_t current_len = strlen(input_buf_);
+    size_t space = sizeof(input_buf_) - current_len - 1;
+    if (space > 0) {
+        strncat(input_buf_, text.c_str(), space);
+        input_buf_[sizeof(input_buf_) - 1] = '\0';
+    }
+    focus_input_ = true; // re-focus so the user can keep typing
+}
+
 } // namespace conduit::ui

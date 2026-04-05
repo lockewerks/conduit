@@ -202,21 +202,15 @@ void UIManager::render() {
 
     // ---- right-click context menu ----
     wants_paste_image_ = false;
+    wants_paste_text_ = false;
     if (ImGui::BeginPopupContextWindow("##context_menu", ImGuiPopupFlags_MouseButtonRight)) {
         if (ImGui::MenuItem("Copy", "Ctrl+C")) {
-            // grab whatever text is selected in the active imgui widget
-            // (imgui's internal clipboard handles the actual copy)
-            const char* selected = ImGui::GetClipboardText();
-            if (selected && selected[0]) {
-                SDL_SetClipboardText(selected);
-            }
+            SDL_SetClipboardText(ImGui::GetClipboardText());
         }
         if (ImGui::MenuItem("Paste", "Ctrl+V")) {
-            // shove the clipboard text into imgui's input buffer
-            const char* clip = SDL_GetClipboardText();
-            if (clip && clip[0]) {
-                ImGui::GetIO().AddInputCharactersUTF8(clip);
-            }
+            // can't paste right now because the popup stole focus from InputText.
+            // set a flag and the input bar will handle it next frame.
+            wants_paste_text_ = true;
         }
         if (ImGui::MenuItem("Paste Image")) {
             wants_paste_image_ = true;

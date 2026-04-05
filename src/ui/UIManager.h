@@ -58,10 +58,13 @@ public:
 
     // right-click context menu results (checked by Application each frame)
     bool wantsPasteImage() const { return wants_paste_image_; }
+    bool wantsPasteText() const { return wants_paste_text_; }
     void clearPasteImage() { wants_paste_image_ = false; }
+    void clearPasteText() { wants_paste_text_ = false; }
 
 private:
     bool wants_paste_image_ = false;
+    bool wants_paste_text_ = false;
     Theme theme_;
     LayoutConfig layout_;
 

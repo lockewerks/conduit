@@ -926,10 +926,17 @@ void Application::run() {
         }
 #endif
 
-        // right-click menu "Paste Image" action
+        // right-click context menu actions
         if (ui_.wantsPasteImage()) {
             tryPasteClipboardImage();
             ui_.clearPasteImage();
+        }
+        if (ui_.wantsPasteText()) {
+            const char* clip = SDL_GetClipboardText();
+            if (clip && clip[0]) {
+                ui_.inputBar().pasteText(clip);
+            }
+            ui_.clearPasteText();
         }
 
         // detect channel switch from mouse clicks (imgui processes clicks during render)
@@ -1069,86 +1076,109 @@ void Application::handleKeyDown(const SDL_KeyboardEvent& key) {
 
 bool Application::tryPasteClipboardImage() {
 #ifdef _WIN32
-    // check if the win32 clipboard has a bitmap sitting in it.
-    // screenshots from snipping tool, print screen, etc all land here.
     if (!client_ || active_channel_.empty()) return false;
-    if (!OpenClipboard(NULL)) return false;
 
-    bool handled = false;
+    // get our window handle for clipboard ownership
+    SDL_SysWMinfo wminfo;
+    SDL_VERSION(&wminfo.version);
+    HWND hwnd = NULL;
+    if (SDL_GetWindowWMInfo(window_, &wminfo)) {
+        hwnd = wminfo.info.win.window;
+    }
 
-    if (IsClipboardFormatAvailable(CF_DIB)) {
-        HANDLE hData = GetClipboardData(CF_DIB);
-        if (hData) {
-            auto* bmi = static_cast<BITMAPINFOHEADER*>(GlobalLock(hData));
-            if (bmi && bmi->biWidth > 0 && bmi->biHeight != 0) {
-                int width = bmi->biWidth;
-                int height = std::abs(bmi->biHeight);
-                bool top_down = (bmi->biHeight < 0);
+    if (!OpenClipboard(hwnd)) {
+        LOG_WARN("couldn't open clipboard");
+        return false;
+    }
 
-                // figure out where the pixel data actually starts
-                int palette_size = 0;
-                if (bmi->biBitCount <= 8) {
-                    palette_size = (bmi->biClrUsed ? bmi->biClrUsed : (1 << bmi->biBitCount)) * 4;
-                }
-                auto* pixels = reinterpret_cast<uint8_t*>(bmi) + bmi->biSize + palette_size;
+    // check for bitmap data - try CF_DIBV5 first (modern), then CF_DIB (legacy)
+    bool has_dib = IsClipboardFormatAvailable(CF_DIBV5) || IsClipboardFormatAvailable(CF_DIB);
+    if (!has_dib) {
+        CloseClipboard();
+        return false;
+    }
 
-                // convert BGR(A) to RGBA because PNG doesn't speak microsoft
-                std::vector<uint8_t> rgba(width * height * 4);
-                int bpp = bmi->biBitCount / 8;
-                int src_stride = ((width * bpp + 3) & ~3); // rows are DWORD-aligned
+    // prefer CF_DIB since it's simpler to parse (CF_DIBV5 has extra fields)
+    UINT fmt = IsClipboardFormatAvailable(CF_DIB) ? CF_DIB : CF_DIBV5;
+    HANDLE hData = GetClipboardData(fmt);
+    if (!hData) {
+        LOG_WARN("GetClipboardData returned null");
+        CloseClipboard();
+        return false;
+    }
 
-                for (int y = 0; y < height; y++) {
-                    int src_y = top_down ? y : (height - 1 - y);
-                    uint8_t* src_row = pixels + src_y * src_stride;
-                    uint8_t* dst_row = rgba.data() + y * width * 4;
+    auto* bmi = static_cast<BITMAPINFOHEADER*>(GlobalLock(hData));
+    if (!bmi || bmi->biWidth <= 0 || bmi->biHeight == 0) {
+        if (bmi) GlobalUnlock(hData);
+        CloseClipboard();
+        return false;
+    }
 
-                    for (int x = 0; x < width; x++) {
-                        if (bpp >= 3) {
-                            dst_row[x * 4 + 0] = src_row[x * bpp + 2]; // R
-                            dst_row[x * 4 + 1] = src_row[x * bpp + 1]; // G
-                            dst_row[x * 4 + 2] = src_row[x * bpp + 0]; // B
-                            dst_row[x * 4 + 3] = (bpp == 4) ? src_row[x * bpp + 3] : 255;
-                        } else {
-                            // grayscale or 16-bit, just slam it in as gray
-                            uint8_t v = src_row[x * bpp];
-                            dst_row[x * 4 + 0] = v;
-                            dst_row[x * 4 + 1] = v;
-                            dst_row[x * 4 + 2] = v;
-                            dst_row[x * 4 + 3] = 255;
-                        }
-                    }
-                }
+    int width = bmi->biWidth;
+    int height = std::abs(bmi->biHeight);
+    bool top_down = (bmi->biHeight < 0);
+    int bpp = bmi->biBitCount / 8;
+    if (bpp < 1) bpp = 1;
 
-                // write to a temp PNG so we can feed it to the upload pipeline
-                char tmp_path[MAX_PATH];
-                GetTempPathA(MAX_PATH, tmp_path);
-                std::string png_path = std::string(tmp_path) + "conduit_paste_" +
-                                       std::to_string(GetTickCount()) + ".png";
+    // skip past the header and any palette to get to the pixel data
+    int palette_size = 0;
+    if (bmi->biBitCount <= 8) {
+        palette_size = (bmi->biClrUsed ? bmi->biClrUsed : (1 << bmi->biBitCount)) * 4;
+    }
+    auto* pixels = reinterpret_cast<uint8_t*>(bmi) + bmi->biSize + palette_size;
 
-                if (stbi_write_png(png_path.c_str(), width, height, 4,
-                                   rgba.data(), width * 4)) {
-                    LOG_INFO("clipboard image saved to " + png_path + " (" +
-                             std::to_string(width) + "x" + std::to_string(height) + ")");
+    // convert BGR(A) to RGBA
+    std::vector<uint8_t> rgba(width * height * 4);
+    int src_stride = ((width * bpp + 3) & ~3);
 
-                    pool_->enqueue([this, ch = active_channel_, path = png_path]() {
-                        client_->uploadFile(ch, path);
-                        // clean up the temp file after upload
-                        std::filesystem::remove(path);
-                    });
-                    handled = true;
-                } else {
-                    LOG_WARN("failed to write clipboard image to " + png_path);
-                }
+    for (int y = 0; y < height; y++) {
+        int src_y = top_down ? y : (height - 1 - y);
+        uint8_t* src_row = pixels + src_y * src_stride;
+        uint8_t* dst_row = rgba.data() + y * width * 4;
+
+        for (int x = 0; x < width; x++) {
+            if (bpp >= 3) {
+                dst_row[x * 4 + 0] = src_row[x * bpp + 2];
+                dst_row[x * 4 + 1] = src_row[x * bpp + 1];
+                dst_row[x * 4 + 2] = src_row[x * bpp + 0];
+                dst_row[x * 4 + 3] = (bpp >= 4) ? src_row[x * bpp + 3] : 255;
+            } else {
+                uint8_t v = src_row[x * bpp];
+                dst_row[x * 4 + 0] = v;
+                dst_row[x * 4 + 1] = v;
+                dst_row[x * 4 + 2] = v;
+                dst_row[x * 4 + 3] = 255;
             }
-            if (bmi) GlobalUnlock(hData);
         }
     }
 
+    GlobalUnlock(hData);
     CloseClipboard();
-    return handled;
+
+    // write to temp PNG
+    char tmp_dir[MAX_PATH];
+    GetTempPathA(MAX_PATH, tmp_dir);
+    std::string png_path = std::string(tmp_dir) + "conduit_paste_" +
+                           std::to_string(GetTickCount()) + ".png";
+
+    if (!stbi_write_png(png_path.c_str(), width, height, 4, rgba.data(), width * 4)) {
+        LOG_WARN("failed to write clipboard image to " + png_path);
+        return false;
+    }
+
+    LOG_INFO("pasting clipboard image " + std::to_string(width) + "x" +
+             std::to_string(height) + " to " + active_channel_);
+
+    pool_->enqueue([this, ch = active_channel_, path = png_path]() {
+        if (client_->uploadFile(ch, path)) {
+            LOG_INFO("clipboard image uploaded");
+        } else {
+            LOG_ERROR("clipboard image upload failed");
+        }
+        std::filesystem::remove(path);
+    });
+    return true;
 #else
-    // on linux/mac we'd need X11/wayland or AppKit clipboard APIs.
-    // for now, only windows gets the fancy paste. sorry.
     return false;
 #endif
 }
