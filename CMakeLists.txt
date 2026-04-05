@@ -63,7 +63,7 @@ target_link_libraries(imgui_lib PUBLIC SDL2::SDL2 OpenGL::GL)
 # no WIN32 subsystem for now so we get console output for debugging
 # flip to WIN32 for final release when we don't want the console window
 file(GLOB_RECURSE CONDUIT_SOURCES src/*.cpp)
-add_executable(conduit ${CONDUIT_SOURCES})
+add_executable(conduit WIN32 ${CONDUIT_SOURCES})
 
 target_include_directories(conduit PRIVATE
     src/

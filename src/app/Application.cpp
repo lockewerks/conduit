@@ -55,6 +55,12 @@ bool Application::init() {
     registerCommands();
     setupTabCompletion();
     ui_.inputBar().setHistory(&input_history_);
+
+    // give the title bar the SDL window handle so it can drag/resize
+    ui_.titleBar().setWindow(window_);
+    // bump title bar height to fit window control buttons
+    ui_.layout().title_bar_height = 32.0f;
+
     connectToSlack();
 
     running_ = true;
@@ -78,16 +84,50 @@ bool Application::initSDL() {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
+    // borderless window - we draw our own title bar with min/max/close
+    // starts at a reasonable size, not fullscreen, not maximized
     window_ = SDL_CreateWindow(
         "Conduit",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         window_width_, window_height_,
-        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS |
+        SDL_WINDOW_ALLOW_HIGHDPI);
 
     if (!window_) {
         LOG_ERROR(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
         return false;
     }
+
+    // tell SDL how to handle hit testing for our borderless window
+    // this lets the OS handle edge resizing while we handle the title bar
+    SDL_SetWindowHitTest(window_, [](SDL_Window* win, const SDL_Point* pt, void* data) -> SDL_HitTestResult {
+        int w, h;
+        SDL_GetWindowSize(win, &w, &h);
+        const int border = 6; // resize grip size in pixels
+        const int title_h = 32; // matches our title bar height
+
+        // edges and corners for resizing
+        bool top = pt->y < border;
+        bool bottom = pt->y > h - border;
+        bool left = pt->x < border;
+        bool right = pt->x > w - border;
+
+        if (top && left) return SDL_HITTEST_RESIZE_TOPLEFT;
+        if (top && right) return SDL_HITTEST_RESIZE_TOPRIGHT;
+        if (bottom && left) return SDL_HITTEST_RESIZE_BOTTOMLEFT;
+        if (bottom && right) return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
+        if (top) return SDL_HITTEST_RESIZE_TOP;
+        if (bottom) return SDL_HITTEST_RESIZE_BOTTOM;
+        if (left) return SDL_HITTEST_RESIZE_LEFT;
+        if (right) return SDL_HITTEST_RESIZE_RIGHT;
+
+        // title bar area is draggable (but not the right side where buttons are)
+        if (pt->y < title_h && pt->x < w - 120) {
+            return SDL_HITTEST_DRAGGABLE;
+        }
+
+        return SDL_HITTEST_NORMAL;
+    }, nullptr);
     return true;
 }
 
@@ -780,6 +820,22 @@ void Application::run() {
         ImGui::NewFrame();
 
         ui_.render();
+
+        // handle custom title bar window controls
+        if (ui_.titleBar().wantsClose()) {
+            running_ = false;
+        }
+        if (ui_.titleBar().wantsMinimize()) {
+            SDL_MinimizeWindow(window_);
+        }
+        if (ui_.titleBar().wantsMaximize()) {
+            Uint32 flags = SDL_GetWindowFlags(window_);
+            if (flags & SDL_WINDOW_MAXIMIZED) {
+                SDL_RestoreWindow(window_);
+            } else {
+                SDL_MaximizeWindow(window_);
+            }
+        }
 
         // detect channel switch from mouse clicks (imgui processes clicks during render)
         int cur_buf = ui_.bufferList().selectedIndex();
