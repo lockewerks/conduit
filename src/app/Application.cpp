@@ -733,6 +733,15 @@ void Application::run() {
             ui_.statusBar().setConnectionState(client_->connectionState());
         }
 
+        // push any decoded images to the GPU (GL calls must happen on main thread)
+        image_renderer_.uploadPending();
+
+        // tick GIF animations so they don't just sit there frozen
+        float now = (float)SDL_GetTicks() / 1000.0f;
+        float delta = now - last_frame_time_;
+        last_frame_time_ = now;
+        gif_renderer_.update(delta * 1000.0f);
+
         // ---- imgui frame ----
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
@@ -809,6 +818,18 @@ void Application::processInput() {
         case SDL_KEYDOWN:
             handleKeyDown(event.key);
             break;
+        case SDL_DROPFILE: {
+            // someone dragged a file onto our window, how kind of them
+            char* file = event.drop.file;
+            if (file && client_ && !active_channel_.empty()) {
+                std::string path(file);
+                pool_->enqueue([this, ch = active_channel_, p = path]() {
+                    client_->uploadFile(ch, p);
+                });
+            }
+            SDL_free(event.drop.file);
+            break;
+        }
         }
     }
 }
@@ -1031,6 +1052,21 @@ void Application::syncBufferView() {
         vm.reply_count = msg.reply_count;
         vm.is_edited = msg.is_edited;
         vm.ts = msg.ts;
+
+        // kick off background downloads for any image attachments so they're
+        // ready to render by the time the user scrolls to them
+        for (auto& f : msg.files) {
+            if (f.mimetype.find("image/") == 0 && !f.thumb_360.empty()) {
+                std::string url = f.thumb_360;
+                auto info = image_renderer_.getTexture(url);
+                if (!info.loading && info.texture_id == 0 && !info.failed) {
+                    pool_->enqueue([this, u = url]() {
+                        image_renderer_.getTexture(u);
+                    });
+                }
+            }
+        }
+
         view_msgs.push_back(std::move(vm));
     }
 
@@ -1044,6 +1080,7 @@ void Application::syncBufferView() {
                 ? "@" + client_->displayName(ch_info->dm_user_id)
                 : "#" + ch_info->name);
         ui_.titleBar().setTopic(ch_info->topic);
+        ui_.titleBar().setMemberCount(ch_info->member_count);
     }
 
     // mark as read

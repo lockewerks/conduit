@@ -100,16 +100,56 @@ void BufferView::render(float x, float y, float width, float height, const Theme
             ImGui::PopStyleColor();
         }
 
-        // file attachments
+        // file attachments - now with inline image placeholders for the visual thinkers
         for (auto& f : msg.files) {
             ImGui::SetCursorPosX(text_x);
-            ImGui::PushStyleColor(ImGuiCol_Text, theme.url_color);
-            std::string label = "[" + f.name + "]";
-            if (f.original_w > 0) {
-                label += " " + std::to_string(f.original_w) + "x" + std::to_string(f.original_h);
+
+            bool is_image = (f.mimetype.find("image/") == 0);
+
+            if (is_image) {
+                // inline image placeholder with a visible bounding box
+                // so it looks intentional and not like a missing texture
+                float img_w = (f.original_w > 0) ? std::min((float)f.original_w, 320.0f) : 320.0f;
+                float img_h = (f.original_h > 0)
+                    ? img_w * ((float)f.original_h / (float)f.original_w)
+                    : 240.0f;
+                img_h = std::min(img_h, 240.0f);
+
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                ImVec2 cursor = ImGui::GetCursorScreenPos();
+
+                // dark box with a subtle border
+                dl->AddRectFilled(cursor, {cursor.x + img_w, cursor.y + img_h},
+                                  ImGui::ColorConvertFloat4ToU32(theme.code_bg));
+                dl->AddRect(cursor, {cursor.x + img_w, cursor.y + img_h},
+                            ImGui::ColorConvertFloat4ToU32(theme.separator_line));
+
+                // centered label inside the box
+                std::string label = "[img: " + f.name;
+                if (f.original_w > 0) {
+                    label += " " + std::to_string(f.original_w) + "x" + std::to_string(f.original_h);
+                }
+                label += "]";
+
+                ImVec2 label_size = ImGui::CalcTextSize(label.c_str());
+                float label_x = cursor.x + (img_w - label_size.x) * 0.5f;
+                float label_y = cursor.y + (img_h - label_size.y) * 0.5f;
+
+                dl->AddText({label_x, label_y},
+                            ImGui::ColorConvertFloat4ToU32(theme.url_color),
+                            label.c_str());
+
+                ImGui::Dummy({img_w, img_h + 4.0f});
+            } else {
+                // regular file attachment, just show the name
+                ImGui::PushStyleColor(ImGuiCol_Text, theme.url_color);
+                std::string label = "\xf0\x9f\x93\x8e " + f.name; // paperclip emoji vibes
+                if (f.original_w > 0) {
+                    label += " " + std::to_string(f.original_w) + "x" + std::to_string(f.original_h);
+                }
+                ImGui::TextUnformatted(label.c_str());
+                ImGui::PopStyleColor();
             }
-            ImGui::TextUnformatted(label.c_str());
-            ImGui::PopStyleColor();
         }
 
         // thread reply count

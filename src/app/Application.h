@@ -8,6 +8,9 @@
 #include "input/InputHistory.h"
 #include "input/KeyHandler.h"
 #include "util/ThreadPool.h"
+#include "render/ImageRenderer.h"
+#include "render/GifRenderer.h"
+#include "render/EmojiRenderer.h"
 
 #include <SDL.h>
 #include <memory>
@@ -65,6 +68,12 @@ private:
     input::TabComplete tab_complete_;
     input::InputHistory input_history_;
     input::KeyHandler keys_;
+
+    // renderers for the fancy stuff
+    render::ImageRenderer image_renderer_;
+    render::GifRenderer gif_renderer_;
+    render::EmojiRenderer emoji_renderer_;
+    float last_frame_time_ = 0.0f;
 
     // current state
     slack::ChannelId active_channel_;
