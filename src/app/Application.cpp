@@ -349,8 +349,123 @@ void Application::registerCommands() {
     });
 
     commands_.registerCommand("thread", "Open thread panel", [this](const input::ParsedCommand&) {
-        // would need a selected message, stubbed for now
         LOG_INFO("thread panel - select a message first");
+    });
+
+    commands_.registerCommand("query", "Open DM with user: /query @user", [this](const input::ParsedCommand& cmd) {
+        if (cmd.argv.empty() || !client_) return;
+        std::string target = cmd.argv[0];
+        if (target[0] == '@') target = target.substr(1);
+        // find the user by name
+        for (auto& u : client_->userCache().getAll()) {
+            if (u.effectiveName() == target || u.display_name == target || u.real_name == target) {
+                // find the DM channel for this user
+                for (auto& ch : client_->channelCache().getJoined()) {
+                    if (ch.type == slack::ChannelType::DirectMessage && ch.dm_user_id == u.id) {
+                        // switch to this DM
+                        auto& entries = ui_.bufferList().entries();
+                        for (int i = 0; i < (int)entries.size(); i++) {
+                            if (entries[i].channel_id == ch.id) {
+                                ui_.bufferList().select(i);
+                                switchToBuffer(i);
+                                return;
+                            }
+                        }
+                    }
+                }
+                LOG_WARN("no DM channel found for " + target);
+                return;
+            }
+        }
+        LOG_WARN("user not found: " + target);
+    });
+
+    commands_.registerCommand("reply", "Reply in thread: /reply text", [this](const input::ParsedCommand& cmd) {
+        if (cmd.args.empty() || !client_ || active_channel_.empty()) return;
+        // reply to the last message that started a thread, or the last message period
+        auto msgs = msg_cache_->get(active_channel_, 50);
+        if (msgs.empty()) return;
+        // find the last thread parent or just use the last message
+        std::string thread_ts;
+        for (auto it = msgs.rbegin(); it != msgs.rend(); ++it) {
+            if (it->reply_count > 0) { thread_ts = it->ts; break; }
+        }
+        if (thread_ts.empty()) thread_ts = msgs.back().ts;
+        pool_->enqueue([this, ch = active_channel_, ts = thread_ts, text = cmd.args]() {
+            client_->sendMessage(ch, text, ts);
+        });
+    });
+
+    commands_.registerCommand("edit", "Edit last message: /edit new text", [this](const input::ParsedCommand& cmd) {
+        if (cmd.args.empty() || !client_ || active_channel_.empty()) return;
+        // find the last message sent by us
+        auto msgs = msg_cache_->get(active_channel_, 50);
+        for (auto it = msgs.rbegin(); it != msgs.rend(); ++it) {
+            if (it->user == client_->selfUserId()) {
+                pool_->enqueue([this, ch = active_channel_, ts = it->ts, text = cmd.args]() {
+                    client_->editMessage(ch, ts, text);
+                });
+                return;
+            }
+        }
+        LOG_WARN("no own message found to edit");
+    });
+
+    commands_.registerCommand("delete", "Delete last own message", [this](const input::ParsedCommand&) {
+        if (!client_ || active_channel_.empty()) return;
+        auto msgs = msg_cache_->get(active_channel_, 50);
+        for (auto it = msgs.rbegin(); it != msgs.rend(); ++it) {
+            if (it->user == client_->selfUserId()) {
+                pool_->enqueue([this, ch = active_channel_, ts = it->ts]() {
+                    client_->deleteMessage(ch, ts);
+                });
+                return;
+            }
+        }
+        LOG_WARN("no own message found to delete");
+    });
+
+    commands_.registerCommand("set", "Change setting: /set key=value", [this](const input::ParsedCommand& cmd) {
+        if (cmd.args.empty()) {
+            LOG_INFO("usage: /set key=value (e.g. /set font_size=16)");
+            return;
+        }
+        auto eq = cmd.args.find('=');
+        if (eq == std::string::npos) {
+            LOG_WARN("invalid format, use /set key=value");
+            return;
+        }
+        std::string key = cmd.args.substr(0, eq);
+        std::string val = cmd.args.substr(eq + 1);
+        if (key == "font_size") {
+            try { config_.get().font_size = std::stof(val); } catch (...) {}
+        } else if (key == "buffer_list_width") {
+            try { ui_.layout().buffer_list_width = std::stof(val); } catch (...) {}
+        } else if (key == "nick_list_width") {
+            try { ui_.layout().nick_list_width = std::stof(val); } catch (...) {}
+        } else {
+            LOG_WARN("unknown setting: " + key);
+        }
+    });
+
+    commands_.registerCommand("org", "Org management: /org list|switch|connect|disconnect", [this](const input::ParsedCommand& cmd) {
+        if (cmd.argv.empty()) {
+            LOG_INFO("usage: /org list | /org switch <name> | /org connect | /org disconnect <name>");
+            return;
+        }
+        std::string sub = cmd.argv[0];
+        if (sub == "list") {
+            for (auto& org : config_.get().orgs) {
+                std::string status = (client_ && client_->teamName() == org.name) ? "connected" : "not connected";
+                LOG_INFO("  " + org.name + " [" + status + "]");
+            }
+        } else if (sub == "switch" && cmd.argv.size() > 1) {
+            LOG_INFO("multi-org switching coming soon (only single org supported for now)");
+        } else if (sub == "connect") {
+            LOG_INFO("add org to config file and restart for now");
+        } else if (sub == "disconnect") {
+            if (client_) { client_->disconnect(); ui_.statusBar().setConnectionState("disconnected"); }
+        }
     });
 
     commands_.registerCommand("help", "Show available commands", [this](const input::ParsedCommand&) {
@@ -478,6 +593,66 @@ void Application::setupKeybindings() {
             }
         });
     }
+
+    // alt+up/down: prev/next buffer with unread
+    keys_.bind("prev_unread", SDLK_UP, KMOD_ALT);
+    keys_.bind("next_unread_down", SDLK_DOWN, KMOD_ALT);
+    keys_.onAction("prev_unread", [this]() {
+        auto& entries = ui_.bufferList().entries();
+        int start = ui_.bufferList().selectedIndex();
+        for (int i = (int)entries.size() - 1; i >= 1; i--) {
+            int idx = (start - i + (int)entries.size()) % (int)entries.size();
+            if (entries[idx].has_unread && !entries[idx].is_separator) {
+                ui_.bufferList().select(idx);
+                switchToBuffer(idx);
+                return;
+            }
+        }
+    });
+    keys_.onAction("next_unread_down", [this]() {
+        auto& entries = ui_.bufferList().entries();
+        int start = ui_.bufferList().selectedIndex();
+        for (int i = 1; i < (int)entries.size(); i++) {
+            int idx = (start + i) % (int)entries.size();
+            if (entries[idx].has_unread && !entries[idx].is_separator) {
+                ui_.bufferList().select(idx);
+                switchToBuffer(idx);
+                return;
+            }
+        }
+    });
+
+    // ctrl+l: clear buffer display
+    keys_.bind("clear_buffer", SDLK_l, KMOD_CTRL);
+    keys_.onAction("clear_buffer", [this]() { needs_message_sync_ = true; });
+
+    // alt+e: edit last own message
+    keys_.bind("edit_msg", SDLK_e, KMOD_ALT);
+    keys_.onAction("edit_msg", [this]() { commands_.execute("/edit "); });
+
+    // alt+d: delete last own message
+    keys_.bind("delete_msg", SDLK_d, KMOD_ALT);
+    keys_.onAction("delete_msg", [this]() { commands_.execute("/delete"); });
+
+    // home/end: scroll to top/bottom
+    keys_.bind("scroll_top", SDLK_HOME, 0);
+    keys_.bind("scroll_bottom", SDLK_END, 0);
+    keys_.onAction("scroll_top", [this]() {
+        // trigger loading older history
+        if (client_ && !active_channel_.empty()) {
+            auto msgs = msg_cache_->get(active_channel_, 1);
+            if (!msgs.empty()) {
+                pool_->enqueue([this, ch = active_channel_, oldest = msgs.front().ts]() {
+                    auto older = client_->getHistory(ch, 100, oldest);
+                    if (!older.empty()) {
+                        msg_cache_->store(ch, older);
+                        needs_message_sync_ = true;
+                    }
+                });
+            }
+        }
+    });
+    keys_.onAction("scroll_bottom", [this]() { ui_.bufferView().scrollToBottom(); });
 }
 
 // ---- Tab completion ----
@@ -536,6 +711,8 @@ void Application::setupTabCompletion() {
 // ---- Main loop ----
 
 void Application::run() {
+    int last_buf_idx = -1;
+
     while (running_) {
         processInput();
         processSlackEvents();
@@ -551,6 +728,32 @@ void Application::run() {
             needs_message_sync_ = false;
         }
 
+        // update status bar
+        if (client_) {
+            ui_.statusBar().setConnectionState(client_->connectionState());
+        }
+
+        // ---- imgui frame ----
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplSDL2_NewFrame();
+        ImGui::NewFrame();
+
+        ui_.render();
+
+        // detect channel switch from mouse clicks (imgui processes clicks during render)
+        int cur_buf = ui_.bufferList().selectedIndex();
+        if (cur_buf != last_buf_idx && cur_buf >= 0) {
+            last_buf_idx = cur_buf;
+            switchToBuffer(cur_buf);
+        }
+
+        // check if input was submitted (also processed during render)
+        if (ui_.inputBar().submitted()) {
+            std::string text = ui_.inputBar().getText();
+            handleInputSubmit(text);
+            ui_.inputBar().clear();
+        }
+
         // check if search panel has a pending query
         std::string search_query = ui_.searchPanel().pendingQuery();
         if (!search_query.empty() && client_) {
@@ -561,25 +764,6 @@ void Application::run() {
                 ui_.searchPanel().setResults(msgs);
             });
         }
-
-        // update status bar
-        if (client_) {
-            ui_.statusBar().setConnectionState(client_->connectionState());
-        }
-
-        // check if input was submitted
-        if (ui_.inputBar().submitted()) {
-            std::string text = ui_.inputBar().getText();
-            handleInputSubmit(text);
-            ui_.inputBar().clear();
-        }
-
-        // imgui frame
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplSDL2_NewFrame();
-        ImGui::NewFrame();
-
-        ui_.render();
 
         ImGui::Render();
         int display_w, display_h;
