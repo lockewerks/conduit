@@ -1319,39 +1319,11 @@ void Application::handleInputSubmit(const std::string& text) {
         return;
     }
 
-    // optimistic local insert — use a real epoch timestamp so formatting works,
-    // but add a .999999 fractional part that real slack ts's never have.
-    // after the API call succeeds, we remove this and let socket mode deliver
-    // the real message with slack's official timestamp.
-    auto epoch_ms = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    std::string pending_ts = std::to_string(epoch_ms) + ".999999";
-    {
-        slack::Message local_msg;
-        local_msg.ts = pending_ts;
-        local_msg.user = client_ ? client_->selfUserId() : "";
-        local_msg.text = text;
-        msg_cache_->store(active_channel_, local_msg);
-        needs_message_sync_ = true;
-    }
-
-    pool_->enqueue([this, channel = active_channel_, msg = text, pts = pending_ts]() {
-        if (client_->sendMessage(channel, msg)) {
-            msg_cache_->remove(channel, pts);
-            // socket mode will deliver the real message
-        } else {
+    // just send it. the websocket delivers our own message back fast enough
+    // that we don't need optimistic insert anymore. no more dupes.
+    pool_->enqueue([this, channel = active_channel_, msg = text]() {
+        if (!client_->sendMessage(channel, msg)) {
             LOG_ERROR("failed to send message");
-            // mark it as failed so the user knows what happened
-            auto msgs = msg_cache_->get(channel, 200);
-            for (auto& m : msgs) {
-                if (m.ts == pts) {
-                    m.subtype = "send_failed";
-                    m.text = "[FAILED] " + m.text;
-                    msg_cache_->update(channel, m);
-                    needs_message_sync_ = true;
-                    break;
-                }
-            }
         }
     });
 }
