@@ -1,6 +1,5 @@
 #include "app/Application.h"
 #include "app/KeychainStore.h"
-#include "app/OAuthFlow.h"
 #include "util/Logger.h"
 #include "util/Platform.h"
 #include "util/TimeFormat.h"
@@ -263,20 +262,25 @@ void Application::connectToSlack() {
             LOG_INFO("loaded token from keychain");
         }
     }
+    // xoxc tokens need a d cookie
+    std::string d_cookie;
+    if (!orgs.empty()) d_cookie = orgs[0].d_cookie;
+    if (d_cookie.empty()) {
+        auto stored = KeychainStore::retrieve("conduit", "d_cookie");
+        if (stored) d_cookie = *stored;
+    }
 
     // no token? open browser for OAuth, user pastes the code back
+    // no token? ask the user to paste one from their browser.
+    // they can get it from slack web: F12 -> Console ->
+    //   JSON.parse(localStorage.localConfig_v2).teams[Object.keys(JSON.parse(localStorage.localConfig_v2).teams)[0]].token
+    // and the d cookie from Application tab -> Cookies -> .slack.com -> d
     if (user_token.empty()) {
-        LOG_INFO("no token found, starting OAuth...");
-        ui_.statusBar().setConnectionState("paste auth code below");
+        LOG_INFO("no token found, prompting user to paste one");
+        ui_.statusBar().setConnectionState("paste your token");
         ui_.statusBar().setOrgName("Conduit");
-        ui_.inputBar().setChannelName("paste code here");
-
-        OAuthFlow oauth(
-            "REDACTED_CLIENT_ID",
-            "REDACTED_CLIENT_SECRET"
-        );
-        oauth.openBrowser();
-        oauth_in_progress_ = true;
+        ui_.inputBar().setChannelName("paste xoxc- token");
+        auth_state_ = AuthState::WaitingForToken;
         return;
     }
 
@@ -293,7 +297,7 @@ void Application::connectToSlack() {
     resolved.name = org_name;
     resolved.user_token = user_token;
     resolved.app_token = app_token;
-    if (!orgs.empty()) resolved.d_cookie = orgs[0].d_cookie;
+    resolved.d_cookie = d_cookie;
 
     client_ = std::make_unique<slack::SlackClient>(resolved, *db_);
 
@@ -1260,55 +1264,60 @@ bool Application::tryPasteClipboardImage() {
 void Application::handleInputSubmit(const std::string& text) {
     if (text.empty()) return;
 
-    // if we're waiting for an OAuth code, treat the input as the auth code
-    if (oauth_in_progress_) {
-        oauth_in_progress_ = false;
-        ui_.statusBar().setConnectionState("exchanging code...");
+    // token paste flow: first the xoxc- token, then the d cookie
+    if (auth_state_ == AuthState::WaitingForToken) {
+        std::string token = text;
+        token.erase(0, token.find_first_not_of(" \t\r\n"));
+        token.erase(token.find_last_not_of(" \t\r\n") + 1);
 
-        // trim whitespace from the pasted code
-        std::string code = text;
-        code.erase(0, code.find_first_not_of(" \t\r\n"));
-        code.erase(code.find_last_not_of(" \t\r\n") + 1);
+        if (token.find("xoxc-") != 0 && token.find("xoxp-") != 0) {
+            ui_.statusBar().setConnectionState("that doesn't look like a token, try again");
+            return;
+        }
 
-        pool_->enqueue([this, code]() {
-            OAuthFlow oauth(
-                "REDACTED_CLIENT_ID",
-                "REDACTED_CLIENT_SECRET"
-            );
-            auto result = oauth.exchangeCode(code);
+        pending_token_ = token;
 
-            if (result.ok && !result.access_token.empty()) {
-                KeychainStore::store("conduit", "user_token", result.access_token);
+        if (token.find("xoxp-") == 0) {
+            // xoxp tokens don't need a cookie, go straight to connect
+            KeychainStore::store("conduit", "user_token", token);
+            auth_state_ = AuthState::None;
+            OrgConfig org;
+            org.name = "Slack";
+            org.user_token = token;
+            org.auto_connect = true;
+            config_.get().orgs.push_back(org);
+            config_.save(Config::defaultPath());
+            connectToSlack();
+        } else {
+            // xoxc tokens need the d cookie too
+            ui_.statusBar().setConnectionState("now paste your d cookie");
+            ui_.inputBar().setChannelName("paste d= cookie");
+            auth_state_ = AuthState::WaitingForCookie;
+        }
+        return;
+    }
 
-                OrgConfig org;
-                org.name = result.team_name.empty() ? "Slack" : result.team_name;
-                org.user_token = result.access_token;
-                org.auto_connect = true;
-                config_.get().orgs.push_back(org);
-                config_.save(Config::defaultPath());
+    if (auth_state_ == AuthState::WaitingForCookie) {
+        std::string cookie = text;
+        cookie.erase(0, cookie.find_first_not_of(" \t\r\n"));
+        cookie.erase(cookie.find_last_not_of(" \t\r\n") + 1);
+        // strip "d=" prefix if they pasted it
+        if (cookie.find("d=") == 0) cookie = cookie.substr(2);
 
-                LOG_INFO("OAuth success, connecting to " + org.name);
+        KeychainStore::store("conduit", "user_token", pending_token_);
+        KeychainStore::store("conduit", "d_cookie", cookie);
 
-                // set up and connect
-                std::string data_dir = platform::getDataDir();
-                platform::ensureDir(data_dir);
-                db_ = std::make_unique<cache::Database>();
-                db_->open(data_dir + "/" + org.name + ".db");
-                msg_cache_ = std::make_unique<cache::MessageCache>(*db_);
+        OrgConfig org;
+        org.name = "Slack";
+        org.user_token = pending_token_;
+        org.d_cookie = cookie;
+        org.auto_connect = true;
+        config_.get().orgs.push_back(org);
+        config_.save(Config::defaultPath());
 
-                ui_.bufferView().setImageRenderer(&image_renderer_);
-                ui_.bufferView().setGifRenderer(&gif_renderer_);
-                ui_.bufferView().setAuthToken(result.access_token);
-
-                client_ = std::make_unique<slack::SlackClient>(org, *db_);
-                if (client_->connect()) {
-                    needs_channel_sync_ = true;
-                }
-            } else {
-                LOG_ERROR("OAuth failed: " + result.error);
-                ui_.statusBar().setConnectionState("auth failed: " + result.error);
-            }
-        });
+        auth_state_ = AuthState::None;
+        pending_token_.clear();
+        connectToSlack();
         return;
     }
 

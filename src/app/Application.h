@@ -99,8 +99,9 @@ private:
     // desktop notifications for mentions and DMs
     notify::NotificationManager notifications_;
 
-    // OAuth flow state
-    bool oauth_in_progress_ = false;
+    // token paste flow: waiting_for_token -> waiting_for_cookie -> connect
+    enum class AuthState { None, WaitingForToken, WaitingForCookie } auth_state_ = AuthState::None;
+    std::string pending_token_;
 };
 
 } // namespace conduit
