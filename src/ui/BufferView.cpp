@@ -121,15 +121,7 @@ void BufferView::render(float x, float y, float width, float height, const Theme
                 float max_w = image_renderer_ ? image_renderer_->maxWidth() : 360.0f;
                 float max_h = image_renderer_ ? image_renderer_->maxHeight() : 240.0f;
                 if (gif_renderer_ && !gif_url.empty() && gif_renderer_->renderInline(gif_url, max_w, max_h)) {
-                    // click on the gif to open full size
-                    if (ImGui::IsItemClicked()) {
-                        last_image_click_ = {true, gif_url};
-                    }
-                    // change cursor to hand on hover so it looks clickable
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-                    }
-                    continue;
+                    continue; // gifs just play inline, no popup needed
                 }
             } else if (is_image) {
                 std::string img_url = f.thumb_360.empty() ? f.url_private : f.thumb_360;

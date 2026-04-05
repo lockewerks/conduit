@@ -17,24 +17,24 @@ void FilePreview::close() {
 void FilePreview::render(float screen_w, float screen_h, const Theme& theme) {
     if (!is_open_) return;
 
-    ImDrawList* dl = ImGui::GetWindowDrawList();
+    // use the FOREGROUND draw list so we render on top of everything,
+    // not buried under inline images in the chat buffer
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
 
-    // dim the background so the user knows they're in a modal
+    // dim the entire screen
     dl->AddRectFilled({0, 0}, {screen_w, screen_h},
-                       ImGui::ColorConvertFloat4ToU32({0.0f, 0.0f, 0.0f, 0.7f}));
+                       ImGui::ColorConvertFloat4ToU32({0.0f, 0.0f, 0.0f, 0.75f}));
 
-    // escape to close, obviously
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
         close();
         return;
     }
 
     if (texture_.texture_id == 0 || texture_.width == 0 || texture_.height == 0) {
-        // no texture loaded yet - show a placeholder instead of a blank void
         ImVec2 text_size = ImGui::CalcTextSize("Loading...");
-        float cx = (screen_w - text_size.x) * 0.5f;
-        float cy = (screen_h - text_size.y) * 0.5f;
-        dl->AddText({cx, cy}, ImGui::ColorConvertFloat4ToU32(theme.text_dim), "Loading...");
+        dl->AddText({(screen_w - text_size.x) * 0.5f, (screen_h - text_size.y) * 0.5f},
+                    ImGui::ColorConvertFloat4ToU32(theme.text_dim), "Loading...");
+        if (ImGui::IsMouseClicked(0)) close();
         return;
     }
 
@@ -44,20 +44,22 @@ void FilePreview::render(float screen_w, float screen_h, const Theme& theme) {
     float img_x = (screen_w - img_w) * 0.5f;
     float img_y = (screen_h - img_h) * 0.5f;
 
-    // the actual image
+    // subtle shadow behind the image so it pops
+    dl->AddRectFilled({img_x - 2, img_y - 2}, {img_x + img_w + 2, img_y + img_h + 2},
+                       ImGui::ColorConvertFloat4ToU32({0.0f, 0.0f, 0.0f, 0.5f}));
+
     dl->AddImage((ImTextureID)(intptr_t)texture_.texture_id,
                  {img_x, img_y}, {img_x + img_w, img_y + img_h});
 
-    // close hint at the top right
-    std::string close_text = "ESC or click to close";
-    ImVec2 close_size = ImGui::CalcTextSize(close_text.c_str());
-    dl->AddText({screen_w - close_size.x - 16.0f, 12.0f},
-                ImGui::ColorConvertFloat4ToU32(theme.text_dim), close_text.c_str());
+    // close hint
+    std::string hint = "ESC or click to close";
+    ImVec2 hint_size = ImGui::CalcTextSize(hint.c_str());
+    dl->AddText({screen_w - hint_size.x - 16.0f, 12.0f},
+                ImGui::ColorConvertFloat4ToU32(theme.text_dim), hint.c_str());
 
-    // click on the dimmed background to close
+    // click outside the image to close
     if (ImGui::IsMouseClicked(0)) {
         ImVec2 mouse = ImGui::GetMousePos();
-        // only close if clicking outside the image
         if (mouse.x < img_x || mouse.x > img_x + img_w ||
             mouse.y < img_y || mouse.y > img_y + img_h) {
             close();
@@ -66,7 +68,6 @@ void FilePreview::render(float screen_w, float screen_h, const Theme& theme) {
 }
 
 void FilePreview::fitToScreen(float screen_w, float screen_h, float& out_w, float& out_h) const {
-    // leave some breathing room around the edges
     float max_w = screen_w * 0.85f;
     float max_h = screen_h * 0.80f;
 
@@ -74,8 +75,6 @@ void FilePreview::fitToScreen(float screen_w, float screen_h, float& out_w, floa
     float tex_h = static_cast<float>(texture_.height);
 
     float scale = std::min(max_w / tex_w, max_h / tex_h);
-
-    // cap upscaling at 2x so tiny images don't become pixel soup
     scale = std::min(scale, 2.0f);
 
     out_w = tex_w * scale;
