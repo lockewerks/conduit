@@ -105,19 +105,48 @@ bool Application::initSDL() {
     }
 #endif
 
-    // size the window to 75% of the screen
-    SDL_DisplayMode dm;
-    int start_w = 1024, start_h = 700;
-    if (SDL_GetDesktopDisplayMode(0, &dm) == 0) {
-        start_w = dm.w * 3 / 4;
-        start_h = dm.h * 3 / 4;
+    // try to restore saved window position/size from last session
+    int start_x = SDL_WINDOWPOS_CENTERED, start_y = SDL_WINDOWPOS_CENTERED;
+    int start_w = 0, start_h = 0;
+    bool maximized = false;
+
+    std::string win_state_path = platform::getConfigDir() + "/window.state";
+    {
+        std::ifstream wf(win_state_path);
+        if (wf.is_open()) {
+            wf >> start_x >> start_y >> start_w >> start_h >> maximized;
+            if (wf.fail() || start_w < 200 || start_h < 200) {
+                // corrupt or nonsensical, ignore
+                start_x = SDL_WINDOWPOS_CENTERED;
+                start_y = SDL_WINDOWPOS_CENTERED;
+                start_w = 0;
+                start_h = 0;
+                maximized = false;
+            }
+        }
+    }
+
+    // if no saved state, default to 80% of screen
+    if (start_w == 0 || start_h == 0) {
+        SDL_DisplayMode dm;
+        if (SDL_GetDesktopDisplayMode(0, &dm) == 0) {
+            start_w = dm.w * 4 / 5;
+            start_h = dm.h * 4 / 5;
+        } else {
+            start_w = 1280;
+            start_h = 900;
+        }
     }
 
     window_ = SDL_CreateWindow(
         "Conduit",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        start_x, start_y,
         start_w, start_h,
         SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
+
+    if (window_ && maximized) {
+        SDL_MaximizeWindow(window_);
+    }
 
     if (!window_) {
         LOG_ERROR(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
@@ -1554,7 +1583,29 @@ void Application::switchToBuffer(int index) {
 // ---- Shutdown ----
 
 void Application::shutdown() {
-    // save caches before disconnecting
+    // save window position/size so we can restore it next time
+    if (window_) {
+        std::string win_state_path = platform::getConfigDir() + "/window.state";
+        platform::ensureDir(platform::getConfigDir());
+        std::ofstream wf(win_state_path);
+        if (wf.is_open()) {
+            Uint32 flags = SDL_GetWindowFlags(window_);
+            bool is_max = (flags & SDL_WINDOW_MAXIMIZED) != 0;
+            int wx, wy, ww, wh;
+            // get the restored (non-maximized) position and size
+            if (is_max) {
+                // SDL doesn't give us the restored size while maximized,
+                // so save what we have and the maximized flag
+                SDL_GetWindowPosition(window_, &wx, &wy);
+                SDL_GetWindowSize(window_, &ww, &wh);
+            } else {
+                SDL_GetWindowPosition(window_, &wx, &wy);
+                SDL_GetWindowSize(window_, &ww, &wh);
+            }
+            wf << wx << " " << wy << " " << ww << " " << wh << " " << is_max;
+        }
+    }
+
     if (msg_cache_) msg_cache_->flushAll();
 
     if (client_) {
