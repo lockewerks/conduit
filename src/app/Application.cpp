@@ -85,70 +85,51 @@ bool Application::initSDL() {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
-    // borderless window - we draw our own title bar with min/max/close
-    // starts at a reasonable size, not fullscreen, not maximized
+    // create a NORMAL resizable window first — NOT borderless.
+    // then we surgically remove the OS title bar via Win32 API while
+    // keeping the resize frame, minimize, maximize, and snap behavior.
+    // SDL_WINDOW_BORDERLESS was fighting with windows and causing
+    // fullscreen nonsense, so we don't use it at all.
     window_ = SDL_CreateWindow(
         "Conduit",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         window_width_, window_height_,
-        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS |
-        SDL_WINDOW_ALLOW_HIGHDPI);
+        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
 
     if (!window_) {
         LOG_ERROR(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
         return false;
     }
 
-    // borderless windows on windows lose the resize frame style.
-    // we need to add WS_THICKFRAME back manually so the OS handles edge
-    // resizing for us. without this the hit test returns resize constants
-    // but windows just ignores them because there's no thick frame to grab.
+    // now strip the OS title bar but keep the resize frame.
+    // WS_POPUP = no caption/menu bar
+    // WS_THICKFRAME = resizable edges (the thing we actually need)
+    // WS_MINIMIZEBOX/MAXIMIZEBOX = enable those via taskbar/snap
+    // WS_SYSMENU = enables alt+f4 and taskbar right-click menu
 #ifdef _WIN32
     {
         SDL_SysWMinfo wminfo;
         SDL_VERSION(&wminfo.version);
         if (SDL_GetWindowWMInfo(window_, &wminfo)) {
             HWND hwnd = wminfo.info.win.window;
-            LONG style = GetWindowLong(hwnd, GWL_STYLE);
-            style |= WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+            LONG style = WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX |
+                         WS_MAXIMIZEBOX | WS_SYSMENU | WS_VISIBLE;
             SetWindowLong(hwnd, GWL_STYLE, style);
-            // poke the window so it picks up the new style
+
+            // force windows to recalculate the frame
             SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
                          SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+
+            // re-center since the frame change might shift things
+            int sw = GetSystemMetrics(SM_CXSCREEN);
+            int sh = GetSystemMetrics(SM_CYSCREEN);
+            SetWindowPos(hwnd, NULL,
+                         (sw - window_width_) / 2, (sh - window_height_) / 2,
+                         window_width_, window_height_,
+                         SWP_NOZORDER);
         }
     }
 #endif
-
-    // hit test callback - tells the OS which parts of our window are
-    // draggable, resizable, or just normal client area
-    SDL_SetWindowHitTest(window_, [](SDL_Window* win, const SDL_Point* pt, void* data) -> SDL_HitTestResult {
-        int w, h;
-        SDL_GetWindowSize(win, &w, &h);
-        const int border = 6; // resize grip size in pixels
-        const int title_h = 32; // matches our title bar height
-
-        // edges and corners for resizing
-        bool top = pt->y < border;
-        bool bottom = pt->y > h - border;
-        bool left = pt->x < border;
-        bool right = pt->x > w - border;
-
-        if (top && left) return SDL_HITTEST_RESIZE_TOPLEFT;
-        if (top && right) return SDL_HITTEST_RESIZE_TOPRIGHT;
-        if (bottom && left) return SDL_HITTEST_RESIZE_BOTTOMLEFT;
-        if (bottom && right) return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
-        if (top) return SDL_HITTEST_RESIZE_TOP;
-        if (bottom) return SDL_HITTEST_RESIZE_BOTTOM;
-        if (left) return SDL_HITTEST_RESIZE_LEFT;
-        if (right) return SDL_HITTEST_RESIZE_RIGHT;
-
-        // title bar area is draggable (but not the right side where buttons are)
-        if (pt->y < title_h && pt->x < w - 120) {
-            return SDL_HITTEST_DRAGGABLE;
-        }
-
-        return SDL_HITTEST_NORMAL;
-    }, nullptr);
     return true;
 }
 
@@ -843,20 +824,37 @@ void Application::run() {
         ui_.render();
 
         // handle custom title bar window controls
+        // use Win32 API directly because SDL's minimize/maximize don't
+        // always play nice with custom-styled windows
         if (ui_.titleBar().wantsClose()) {
             running_ = false;
         }
-        if (ui_.titleBar().wantsMinimize()) {
-            SDL_MinimizeWindow(window_);
-        }
-        if (ui_.titleBar().wantsMaximize()) {
-            Uint32 flags = SDL_GetWindowFlags(window_);
-            if (flags & SDL_WINDOW_MAXIMIZED) {
-                SDL_RestoreWindow(window_);
-            } else {
-                SDL_MaximizeWindow(window_);
+#ifdef _WIN32
+        if (ui_.titleBar().wantsMinimize() || ui_.titleBar().wantsMaximize()) {
+            SDL_SysWMinfo wminfo;
+            SDL_VERSION(&wminfo.version);
+            if (SDL_GetWindowWMInfo(window_, &wminfo)) {
+                HWND hwnd = wminfo.info.win.window;
+                if (ui_.titleBar().wantsMinimize()) {
+                    ShowWindow(hwnd, SW_MINIMIZE);
+                }
+                if (ui_.titleBar().wantsMaximize()) {
+                    if (IsZoomed(hwnd)) {
+                        ShowWindow(hwnd, SW_RESTORE);
+                    } else {
+                        ShowWindow(hwnd, SW_MAXIMIZE);
+                    }
+                }
             }
         }
+#else
+        if (ui_.titleBar().wantsMinimize()) SDL_MinimizeWindow(window_);
+        if (ui_.titleBar().wantsMaximize()) {
+            Uint32 flags = SDL_GetWindowFlags(window_);
+            if (flags & SDL_WINDOW_MAXIMIZED) SDL_RestoreWindow(window_);
+            else SDL_MaximizeWindow(window_);
+        }
+#endif
 
         // detect channel switch from mouse clicks (imgui processes clicks during render)
         int cur_buf = ui_.bufferList().selectedIndex();
