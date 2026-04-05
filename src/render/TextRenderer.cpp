@@ -1,4 +1,5 @@
 #include "render/TextRenderer.h"
+#include "render/EmojiMap.h"
 #include <algorithm>
 
 namespace conduit::render {
@@ -341,10 +342,21 @@ void renderSpans(const std::vector<TextSpan>& spans, float wrap_width,
             break;
 
         case TextSpan::Style::Emoji:
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{1.0f, 0.9f, 0.4f, 1.0f});
-            ImGui::TextUnformatted(span.text.c_str());
-            ImGui::PopStyleColor();
-            need_sameline = true;
+            {
+                // try to render the actual unicode glyph instead of :name:
+                // because we live in the future and fonts have emoji now
+                auto& emap = getEmojiMap();
+                auto it = emap.find(span.reference);
+                if (it != emap.end()) {
+                    ImGui::TextUnformatted(it->second.c_str());
+                } else {
+                    // unknown emoji - show the :name: in yellow so it's obvious
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{1.0f, 0.9f, 0.4f, 1.0f});
+                    ImGui::TextUnformatted(span.text.c_str());
+                    ImGui::PopStyleColor();
+                }
+                need_sameline = true;
+            }
             break;
 
         case TextSpan::Style::Quote:

@@ -17,6 +17,11 @@
 #include <GL/gl.h>
 
 #include <filesystem>
+#include <fstream>
+
+#ifdef _WIN32
+#include "stb_image_write.h"
+#endif
 
 namespace conduit {
 
@@ -165,14 +170,49 @@ void Application::loadFonts() {
         "../assets/fonts/JetBrainsMono-Regular.ttf",
     };
 
+    bool loaded_primary = false;
     for (auto& path : search_paths) {
         if (std::filesystem::exists(path)) {
             io.Fonts->AddFontFromFileTTF(path.c_str(), 14.0f);
             LOG_INFO("loaded JetBrains Mono from " + path);
-            return;
+            loaded_primary = true;
+            break;
         }
     }
-    LOG_WARN("couldn't find JetBrains Mono, using imgui default");
+    if (!loaded_primary) {
+        LOG_WARN("couldn't find JetBrains Mono, using imgui default");
+    }
+
+    // merge an emoji-capable font as fallback so unicode emoji just render
+    // instead of showing up as tofu rectangles. each platform ships one.
+    ImFontConfig emoji_cfg;
+    emoji_cfg.MergeMode = true;
+    emoji_cfg.OversampleH = 1;
+    emoji_cfg.OversampleV = 1;
+
+    // the ranges we care about: misc symbols, dingbats, emoticons, the works
+    static const ImWchar emoji_ranges[] = {
+        0x2600, 0x27BF,   // misc symbols, dingbats
+        0x2B50, 0x2B55,   // stars, circles
+        0xFE00, 0xFE0F,   // variation selectors
+        0x1F300, 0x1F9FF,  // emoticons, symbols, flags, etc
+        0,
+    };
+
+#ifdef _WIN32
+    std::string emoji_font = "C:\\Windows\\Fonts\\seguiemj.ttf";
+#elif defined(__APPLE__)
+    std::string emoji_font = "/System/Library/Fonts/Apple Color Emoji.ttc";
+#else
+    std::string emoji_font = "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf";
+#endif
+
+    if (std::filesystem::exists(emoji_font)) {
+        io.Fonts->AddFontFromFileTTF(emoji_font.c_str(), 14.0f, &emoji_cfg, emoji_ranges);
+        LOG_INFO("emoji font loaded from " + emoji_font);
+    } else {
+        LOG_WARN("no emoji font found at " + emoji_font + " - emoji will render as :text:");
+    }
 }
 
 // ---- Config & Slack connection ----
@@ -239,8 +279,9 @@ void Application::connectToSlack() {
 
     client_ = std::make_unique<slack::SlackClient>(resolved, *db_);
 
-    // wire up the image renderer so BufferView can actually show pictures
+    // wire up renderers so BufferView can actually show pictures and dancing GIFs
     ui_.bufferView().setImageRenderer(&image_renderer_);
+    ui_.bufferView().setGifRenderer(&gif_renderer_);
     ui_.bufferView().setAuthToken(user_token);
 
     ui_.statusBar().setOrgName(org.name);
@@ -630,7 +671,8 @@ void Application::setupKeybindings() {
         });
     });
     keys_.onAction("escape", [this]() {
-        if (ui_.searchPanel().isOpen()) ui_.searchPanel().close();
+        if (ui_.emojiPicker().isOpen()) ui_.emojiPicker().close();
+        else if (ui_.searchPanel().isOpen()) ui_.searchPanel().close();
         else if (ui_.commandPalette().isOpen()) ui_.commandPalette().close();
         else if (ui_.threadPanel().isOpen()) ui_.threadPanel().close();
     });
@@ -695,6 +737,32 @@ void Application::setupKeybindings() {
     // alt+d: delete last own message
     keys_.bind("delete_msg", SDLK_d, KMOD_ALT);
     keys_.onAction("delete_msg", [this]() { commands_.execute("/delete"); });
+
+    // alt+r: open reaction picker for selected (or last) message
+    keys_.bind("react_picker", SDLK_r, KMOD_ALT);
+    keys_.onAction("react_picker", [this]() {
+        if (!client_ || active_channel_.empty() || !msg_cache_) return;
+
+        // figure out which message we're reacting to
+        std::string ts = ui_.bufferView().selectedTs();
+        if (ts.empty()) {
+            auto msgs = msg_cache_->get(active_channel_, 1);
+            if (!msgs.empty()) ts = msgs.back().ts;
+        }
+        if (ts.empty()) return;
+
+        // anchor near the input bar so it doesn't cover the message
+        ImVec2 vp_size = ImGui::GetMainViewport()->Size;
+        float anchor_x = vp_size.x * 0.3f;
+        float anchor_y = vp_size.y - ui_.layout().input_bar_height - ui_.layout().status_bar_height;
+
+        ui_.emojiPicker().setSelectCallback([this, ch = active_channel_, ts](const std::string& emoji) {
+            pool_->enqueue([this, ch, ts, emoji]() {
+                client_->addReaction(ch, ts, emoji);
+            });
+        });
+        ui_.emojiPicker().open(anchor_x, anchor_y);
+    });
 
     // home/end: scroll to top/bottom
     keys_.bind("scroll_top", SDLK_HOME, 0);
@@ -795,8 +863,9 @@ void Application::run() {
             ui_.statusBar().setConnectionState(client_->connectionState());
         }
 
-        // push any decoded images to the GPU (GL calls must happen on main thread)
+        // push any decoded images/gifs to the GPU (GL calls must happen on main thread)
         image_renderer_.uploadPending();
+        gif_renderer_.uploadPending();
 
         // tick GIF animations so they don't just sit there frozen
         float now = (float)SDL_GetTicks() / 1000.0f;
@@ -861,6 +930,43 @@ void Application::run() {
         if (cur_buf != last_buf_idx && cur_buf >= 0) {
             last_buf_idx = cur_buf;
             switchToBuffer(cur_buf);
+        }
+
+        // reaction badge clicks: toggle add/remove on the Slack API
+        {
+            auto rc = ui_.bufferView().lastReactionClick();
+            if (rc.clicked && client_ && !active_channel_.empty()) {
+                std::string emoji = rc.emoji_name;
+                std::string ts = rc.message_ts;
+
+                // check if we already reacted so we know whether to add or yank it
+                bool already_reacted = false;
+                auto msgs = msg_cache_->get(active_channel_, 200);
+                for (auto& m : msgs) {
+                    if (m.ts == ts) {
+                        for (auto& r : m.reactions) {
+                            if (r.emoji_name == emoji && r.user_reacted) {
+                                already_reacted = true;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+
+                pool_->enqueue([this, ch = active_channel_, ts, emoji, already_reacted]() {
+                    if (already_reacted) {
+                        client_->removeReaction(ch, ts, emoji);
+                    } else {
+                        client_->addReaction(ch, ts, emoji);
+                    }
+                    // refresh so the UI reflects the change without waiting for the socket
+                    auto history = client_->getHistory(ch, 50);
+                    msg_cache_->store(ch, history);
+                    needs_message_sync_ = true;
+                });
+            }
+            ui_.bufferView().clearReactionClick();
         }
 
         // check if input was submitted (also processed during render)
@@ -942,9 +1048,102 @@ void Application::processInput() {
 }
 
 void Application::handleKeyDown(const SDL_KeyboardEvent& key) {
+    // ctrl+v: check for clipboard image before letting imgui handle text paste.
+    // text paste still works fine - we only intercept when there's a bitmap.
+    if (key.keysym.sym == SDLK_v && (key.keysym.mod & KMOD_CTRL)) {
+        if (tryPasteClipboardImage()) return;
+        // no image? fall through to normal text paste via imgui
+    }
+
     // let the keybinding system try first
     if (keys_.handleKeyDown(key)) return;
     // imgui handles the rest (input bar typing, etc)
+}
+
+bool Application::tryPasteClipboardImage() {
+#ifdef _WIN32
+    // check if the win32 clipboard has a bitmap sitting in it.
+    // screenshots from snipping tool, print screen, etc all land here.
+    if (!client_ || active_channel_.empty()) return false;
+    if (!OpenClipboard(NULL)) return false;
+
+    bool handled = false;
+
+    if (IsClipboardFormatAvailable(CF_DIB)) {
+        HANDLE hData = GetClipboardData(CF_DIB);
+        if (hData) {
+            auto* bmi = static_cast<BITMAPINFOHEADER*>(GlobalLock(hData));
+            if (bmi && bmi->biWidth > 0 && bmi->biHeight != 0) {
+                int width = bmi->biWidth;
+                int height = std::abs(bmi->biHeight);
+                bool top_down = (bmi->biHeight < 0);
+
+                // figure out where the pixel data actually starts
+                int palette_size = 0;
+                if (bmi->biBitCount <= 8) {
+                    palette_size = (bmi->biClrUsed ? bmi->biClrUsed : (1 << bmi->biBitCount)) * 4;
+                }
+                auto* pixels = reinterpret_cast<uint8_t*>(bmi) + bmi->biSize + palette_size;
+
+                // convert BGR(A) to RGBA because PNG doesn't speak microsoft
+                std::vector<uint8_t> rgba(width * height * 4);
+                int bpp = bmi->biBitCount / 8;
+                int src_stride = ((width * bpp + 3) & ~3); // rows are DWORD-aligned
+
+                for (int y = 0; y < height; y++) {
+                    int src_y = top_down ? y : (height - 1 - y);
+                    uint8_t* src_row = pixels + src_y * src_stride;
+                    uint8_t* dst_row = rgba.data() + y * width * 4;
+
+                    for (int x = 0; x < width; x++) {
+                        if (bpp >= 3) {
+                            dst_row[x * 4 + 0] = src_row[x * bpp + 2]; // R
+                            dst_row[x * 4 + 1] = src_row[x * bpp + 1]; // G
+                            dst_row[x * 4 + 2] = src_row[x * bpp + 0]; // B
+                            dst_row[x * 4 + 3] = (bpp == 4) ? src_row[x * bpp + 3] : 255;
+                        } else {
+                            // grayscale or 16-bit, just slam it in as gray
+                            uint8_t v = src_row[x * bpp];
+                            dst_row[x * 4 + 0] = v;
+                            dst_row[x * 4 + 1] = v;
+                            dst_row[x * 4 + 2] = v;
+                            dst_row[x * 4 + 3] = 255;
+                        }
+                    }
+                }
+
+                // write to a temp PNG so we can feed it to the upload pipeline
+                char tmp_path[MAX_PATH];
+                GetTempPathA(MAX_PATH, tmp_path);
+                std::string png_path = std::string(tmp_path) + "conduit_paste_" +
+                                       std::to_string(GetTickCount()) + ".png";
+
+                if (stbi_write_png(png_path.c_str(), width, height, 4,
+                                   rgba.data(), width * 4)) {
+                    LOG_INFO("clipboard image saved to " + png_path + " (" +
+                             std::to_string(width) + "x" + std::to_string(height) + ")");
+
+                    pool_->enqueue([this, ch = active_channel_, path = png_path]() {
+                        client_->uploadFile(ch, path);
+                        // clean up the temp file after upload
+                        std::filesystem::remove(path);
+                    });
+                    handled = true;
+                } else {
+                    LOG_WARN("failed to write clipboard image to " + png_path);
+                }
+            }
+            if (bmi) GlobalUnlock(hData);
+        }
+    }
+
+    CloseClipboard();
+    return handled;
+#else
+    // on linux/mac we'd need X11/wayland or AppKit clipboard APIs.
+    // for now, only windows gets the fancy paste. sorry.
+    return false;
+#endif
 }
 
 void Application::handleInputSubmit(const std::string& text) {
@@ -1193,13 +1392,18 @@ void Application::syncBufferView() {
         vm.is_edited = msg.is_edited;
         vm.ts = msg.ts;
 
-        // queue image downloads so they're ready by the time we render
+        // queue image/gif downloads so they're ready by the time we render
         for (auto& f : msg.files) {
             if (f.mimetype.find("image/") == 0) {
                 std::string img_url = f.thumb_360.empty() ? f.url_private : f.thumb_360;
                 if (!img_url.empty()) {
-                    image_renderer_.requestImage(img_url,
-                        config_.get().orgs[0].user_token, *pool_);
+                    if (f.mimetype == "image/gif") {
+                        gif_renderer_.requestGif(img_url,
+                            config_.get().orgs[0].user_token, *pool_);
+                    } else {
+                        image_renderer_.requestImage(img_url,
+                            config_.get().orgs[0].user_token, *pool_);
+                    }
                 }
             }
         }

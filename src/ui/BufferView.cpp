@@ -111,12 +111,21 @@ void BufferView::render(float x, float y, float width, float height, const Theme
         for (auto& f : msg.files) {
             ImGui::SetCursorPosX(text_x);
             bool is_image = (f.mimetype.find("image/") == 0);
+            bool is_gif = (f.mimetype == "image/gif");
 
-            if (is_image) {
+            if (is_gif) {
+                // GIFs get the special treatment: animated frames, the whole shebang
+                std::string gif_url = f.thumb_360.empty() ? f.url_private : f.thumb_360;
+                float max_w = image_renderer_ ? image_renderer_->maxWidth() : 360.0f;
+                float max_h = image_renderer_ ? image_renderer_->maxHeight() : 240.0f;
+                if (gif_renderer_ && !gif_url.empty() && gif_renderer_->renderInline(gif_url, max_w, max_h)) {
+                    continue;
+                }
+                // still loading, show the placeholder box below
+            } else if (is_image) {
                 // try to render the actual image if we have a renderer wired up
                 std::string img_url = f.thumb_360.empty() ? f.url_private : f.thumb_360;
                 if (image_renderer_ && !img_url.empty() && image_renderer_->renderInline(img_url)) {
-                    // rendered the real image, nice
                     continue;
                 }
 
@@ -157,10 +166,13 @@ void BufferView::render(float x, float y, float width, float height, const Theme
             ImGui::PopStyleColor();
         }
 
-        // reactions
+        // reactions - click a badge to toggle your own reaction
         if (!msg.reactions.empty()) {
             ImGui::SetCursorPosX(text_x);
-            render::ReactionBadge::render(msg.reactions, theme, text_avail);
+            auto click = render::ReactionBadge::render(msg.reactions, theme, text_avail);
+            if (click.clicked) {
+                last_reaction_click_ = {true, click.emoji_name, msg.ts};
+            }
         }
 
         float msg_end_y = ImGui::GetCursorScreenPos().y;

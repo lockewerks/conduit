@@ -109,13 +109,27 @@ void BufferList::render(float x, float y, float width, float height, const Theme
             ImGui::SameLine(0, 4.0f);
         }
 
-        // channel name - bright if unread, dim if old news
+        // channel name - bright if unread, dim if old news.
+        // clip the text so long-ass channel names don't spill into the void
         if (entry.has_unread || is_selected) {
             ImGui::PushStyleColor(ImGuiCol_Text, theme.text_bright);
         } else {
             ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
         }
-        ImGui::TextUnformatted(entry.name.c_str());
+        {
+            // leave room for the unread badge if there is one
+            float right_margin = (entry.unread_count > 0) ? 40.0f : 8.0f;
+            float clip_w = width - ImGui::GetCursorPosX() - right_margin;
+            if (clip_w > 0) {
+                ImVec2 clip_min = ImGui::GetCursorScreenPos();
+                ImVec2 clip_max = {clip_min.x + clip_w, clip_min.y + ImGui::GetTextLineHeight()};
+                ImGui::PushClipRect(clip_min, clip_max, true);
+            }
+            ImGui::TextUnformatted(entry.name.c_str());
+            if (clip_w > 0) {
+                ImGui::PopClipRect();
+            }
+        }
         ImGui::PopStyleColor();
 
         // unread count badge, tucked to the right

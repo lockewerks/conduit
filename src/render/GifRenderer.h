@@ -2,8 +2,10 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <mutex>
 #include <imgui.h>
+#include "util/ThreadPool.h"
 
 typedef unsigned int GLuint;
 
@@ -47,9 +49,26 @@ public:
     // upload pending decoded frames on the main thread
     void uploadPending();
 
+    // kick off async download + decode for a GIF URL
+    void requestGif(const std::string& url, const std::string& auth_token,
+                    conduit::ThreadPool& pool);
+
 private:
     std::mutex mutex_;
     std::unordered_map<std::string, AnimatedGif> gifs_;
+
+    // decoded frame data waiting for GL upload on the main thread
+    struct PendingGifUpload {
+        std::string url;
+        std::vector<std::vector<uint8_t>> frames; // RGBA pixel data per frame
+        std::vector<int> delays_ms;
+        int width = 0;
+        int height = 0;
+    };
+    std::vector<PendingGifUpload> pending_gif_uploads_;
+
+    // URLs currently being fetched so we don't fire off duplicate requests
+    std::unordered_set<std::string> in_flight_;
 };
 
 } // namespace conduit::render

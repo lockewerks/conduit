@@ -37,7 +37,8 @@ void StatusBar::render(float x, float y, float width, float height, const Theme&
     ImGui::PopStyleColor();
     ImGui::SameLine(0, 6.0f);
 
-    // org name and connection state
+    // org name - show the connection state only when something's off.
+    // if we're connected and caught up, the green dot says it all.
     ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
     std::string status_text = org_name_;
     if (connection_state_ != "connected") {
@@ -45,7 +46,7 @@ void StatusBar::render(float x, float y, float width, float height, const Theme&
     }
     ImGui::TextUnformatted(status_text.c_str());
 
-    // unread badge if anything is piling up
+    // unread badge if messages are piling up
     if (unread_count_ > 0) {
         ImGui::SameLine(0, 12.0f);
         ImGui::PushStyleColor(ImGuiCol_Text, theme.mention_badge);

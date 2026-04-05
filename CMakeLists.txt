@@ -21,6 +21,7 @@ find_package(CURL REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(libwebsockets CONFIG REQUIRED)
+find_package(GIF REQUIRED)
 
 # --- header-only / small deps via FetchContent ---
 include(FetchContent)
@@ -57,6 +58,9 @@ target_include_directories(imgui_lib PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
 )
+# 32-bit wchar so ImGui can address emoji codepoints above U+FFFF.
+# without this, emoji ranges silently truncate and you get tofu rectangles.
+target_compile_definitions(imgui_lib PUBLIC IMGUI_USE_WCHAR32)
 target_link_libraries(imgui_lib PUBLIC SDL2::SDL2 OpenGL::GL)
 
 # --- main executable ---
@@ -80,6 +84,7 @@ target_link_libraries(conduit PRIVATE
     nlohmann_json::nlohmann_json
     tomlplusplus::tomlplusplus
     websockets_shared
+    GIF::GIF
 )
 
 # MSVC multi-config generators put output in Debug/ or Release/ subdirs

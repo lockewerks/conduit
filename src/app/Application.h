@@ -46,6 +46,7 @@ private:
     void processSlackEvents();
     void handleKeyDown(const SDL_KeyboardEvent& key);
     void handleInputSubmit(const std::string& text);
+    bool tryPasteClipboardImage();
 
     // update the UI from real slack data
     void syncBufferList();

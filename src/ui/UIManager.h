@@ -9,6 +9,7 @@
 #include "ui/ThreadPanel.h"
 #include "ui/SearchPanel.h"
 #include "ui/CommandPalette.h"
+#include "ui/EmojiPicker.h"
 
 namespace conduit::ui {
 
@@ -53,6 +54,7 @@ public:
     ThreadPanel& threadPanel() { return thread_panel_; }
     SearchPanel& searchPanel() { return search_panel_; }
     CommandPalette& commandPalette() { return command_palette_; }
+    EmojiPicker& emojiPicker() { return emoji_picker_; }
 
 private:
     Theme theme_;
@@ -67,6 +69,7 @@ private:
     ThreadPanel thread_panel_;
     SearchPanel search_panel_;
     CommandPalette command_palette_;
+    EmojiPicker emoji_picker_;
 
     // splitter drag state
     bool dragging_left_splitter_ = false;

@@ -124,9 +124,18 @@ void UIManager::render() {
     // title bar (full width)
     title_bar_.render(0, 0, win_w, title_h, theme_);
 
+    ImDrawList* wdl = ImGui::GetWindowDrawList();
+    ImVec2 wpos = ImGui::GetWindowPos();
+
     // left sidebar
     if (layout_.show_buffer_list) {
         buffer_list_.render(0, title_h, sidebar_left, center_height, theme_);
+
+        // hairline border so the sidebar doesn't just melt into the chat pane
+        wdl->AddLine(
+            {wpos.x + sidebar_left, wpos.y + title_h},
+            {wpos.x + sidebar_left, wpos.y + title_h + center_height},
+            ImGui::ColorConvertFloat4ToU32(theme_.separator_line));
     }
 
     // main chat area
@@ -141,6 +150,12 @@ void UIManager::render() {
     // right sidebar
     if (layout_.show_nick_list) {
         nick_list_.render(win_w - sidebar_right, title_h, sidebar_right, center_height, theme_);
+
+        // matching hairline on the left edge of the nick list
+        wdl->AddLine(
+            {wpos.x + win_w - sidebar_right, wpos.y + title_h},
+            {wpos.x + win_w - sidebar_right, wpos.y + title_h + center_height},
+            ImGui::ColorConvertFloat4ToU32(theme_.separator_line));
     }
 
     // input bar
@@ -179,6 +194,9 @@ void UIManager::render() {
     }
     if (command_palette_.isOpen()) {
         command_palette_.render(0, 0, win_w, win_h, theme_);
+    }
+    if (emoji_picker_.isOpen()) {
+        emoji_picker_.render(theme_);
     }
 
     ImGui::End();
