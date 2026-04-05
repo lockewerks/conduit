@@ -15,6 +15,7 @@ class NickList {
 public:
     NickList();
     void render(float x, float y, float width, float height, const Theme& theme);
+    void setNicks(const std::vector<NickEntry>& nicks) { nicks_ = nicks; }
 
 private:
     std::vector<NickEntry> nicks_;

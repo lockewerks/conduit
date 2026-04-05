@@ -4,20 +4,39 @@
 namespace conduit::ui {
 
 BufferList::BufferList() {
-    // placeholder data so we can see the layout
-    // this all gets replaced once we have real slack data
+    // start with a placeholder entry so the UI doesn't look totally empty
     entries_ = {
-        {"LockeWerks", false, false, 0, false, true},
-        {"#general", true, false, 0, false, false},
-        {"#random", false, true, 3, false, false},
-        {"#dev", false, false, 0, false, false},
-        {"#design", false, true, 1, false, false},
-        {"#incidents", false, false, 0, false, false},
-        {"#food", false, true, 12, false, false},
-        {"@alice", false, false, 0, true, false},
-        {"@bob", false, true, 2, true, false},
-        {"@carol", false, false, 0, true, false},
+        {"Conduit", false, false, 0, false, true, ""},
+        {"#welcome", true, false, 0, false, false, ""},
     };
+}
+
+void BufferList::setEntries(const std::vector<BufferEntry>& entries) {
+    // preserve selection if possible
+    std::string prev_id;
+    if (selected_ >= 0 && selected_ < (int)entries_.size()) {
+        prev_id = entries_[selected_].channel_id;
+    }
+
+    entries_ = entries;
+
+    // try to re-select the same channel
+    if (!prev_id.empty()) {
+        for (int i = 0; i < (int)entries_.size(); i++) {
+            if (entries_[i].channel_id == prev_id) {
+                selected_ = i;
+                return;
+            }
+        }
+    }
+
+    // couldn't find it, default to first non-separator
+    for (int i = 0; i < (int)entries_.size(); i++) {
+        if (!entries_[i].is_separator) {
+            selected_ = i;
+            return;
+        }
+    }
 }
 
 void BufferList::render(float x, float y, float width, float height, const Theme& theme) {
@@ -32,7 +51,6 @@ void BufferList::render(float x, float y, float width, float height, const Theme
         const auto& entry = entries_[i];
 
         if (entry.is_separator) {
-            // org header - slightly brighter
             ImGui::PushStyleColor(ImGuiCol_Text, theme.text_bright);
             ImGui::TextUnformatted((" " + entry.name).c_str());
             ImGui::PopStyleColor();
@@ -49,7 +67,6 @@ void BufferList::render(float x, float y, float width, float height, const Theme
                 ImGui::ColorConvertFloat4ToU32(theme.bg_selected));
         }
 
-        // unread indicator: bright white for unreads
         if (entry.has_unread) {
             ImGui::PushStyleColor(ImGuiCol_Text, theme.text_bright);
         } else {
@@ -77,9 +94,7 @@ void BufferList::render(float x, float y, float width, float height, const Theme
 }
 
 void BufferList::select(int index) {
-    if (index >= 0 && index < (int)entries_.size()) {
-        selected_ = index;
-    }
+    if (index >= 0 && index < (int)entries_.size()) selected_ = index;
 }
 
 void BufferList::selectNext() {

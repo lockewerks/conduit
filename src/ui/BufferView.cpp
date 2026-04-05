@@ -1,36 +1,19 @@
 #include "ui/BufferView.h"
+#include "render/TextRenderer.h"
+#include "render/ReactionBadge.h"
 #include <imgui.h>
 
 namespace conduit::ui {
 
-BufferView::BufferView() {
-    // placeholder messages so we can see the layout working
-    // if you're reading this and expecting real slack data, patience grasshopper
-    messages_ = {
-        {"09:00", "alice", "good morning everyone"},
-        {"09:01", "bob", "morning! anyone else's slack client using 2GB of RAM?"},
-        {"09:01", "carol", "just electron things"},
-        {"09:02", "alice", "have you tried turning it off and never on again"},
-        {"09:03", "dave", "shipped the new API yesterday, seems stable so far"},
-        {"09:03", "dave", "famous last words, I know"},
-        {"09:05", "", "--- new messages ---", true},
-        {"09:10", "alice", "hey @bob did you see the PR for the auth refactor?"},
-        {"09:11", "bob", "yeah looks good, left a few comments"},
-        {"09:12", "carol", "the CI is green for once, screenshot for posterity"},
-        {"09:12", "carol", "[image: ci_green.png]"},
-        {"09:15", "bot", "Build #4567 passed on main", true},
-        {"09:16", "dave", "let's not jinx it"},
-        {"09:20", "alice", "too late, prod is on fire"},
-        {"09:20", "alice", "jk jk"},
-        {"09:21", "bob", ":laughing: :fire:"},
-        {"09:22", "carol", "one of these days we'll have a boring standup"},
-        {"09:23", "dave", "that day is not today"},
-        {"09:30", "alice", "alright, standup time. what's everyone working on?"},
-        {"09:30", "bob", "still fighting the rate limiter. slack's API is... special."},
-        {"09:31", "carol", "frontend stuff. CSS is pain."},
-        {"09:31", "dave", "trying to make libwebsockets behave on windows"},
-        {"09:32", "alice", "godspeed dave"},
-    };
+BufferView::BufferView() {}
+
+void BufferView::setMessages(const std::vector<BufferViewMessage>& messages) {
+    messages_ = messages;
+    has_new_data_ = true;
+}
+
+void BufferView::scrollToBottom() {
+    auto_scroll_ = true;
 }
 
 void BufferView::render(float x, float y, float width, float height, const Theme& theme) {
@@ -39,62 +22,121 @@ void BufferView::render(float x, float y, float width, float height, const Theme
     ImGui::PushStyleColor(ImGuiCol_ChildBg, theme.bg_main);
     ImGui::BeginChild("##bufferview", {width, height}, false);
 
-    const float ts_width = 54.0f;   // timestamp column
-    const float nick_width = 100.0f; // nickname column (right-aligned)
+    const float ts_width = 54.0f;
+    const float nick_width = 100.0f;
     const float pad = 8.0f;
+    float text_start_x = pad + ts_width + nick_width + 8.0f;
+    float text_avail = width - text_start_x - pad;
 
-    for (const auto& msg : messages_) {
+    if (messages_.empty()) {
+        // show something so it's not a void
+        ImGui::SetCursorPos({pad + ts_width, height * 0.4f});
+        ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
+        ImGui::TextUnformatted("no messages yet. say something, coward.");
+        ImGui::PopStyleColor();
+    }
+
+    for (auto& msg : messages_) {
         float cursor_x = pad;
 
-        // timestamp in dim
+        // timestamp
         ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
         ImGui::SetCursorPosX(cursor_x);
-        ImGui::TextUnformatted(msg.time.c_str());
+        ImGui::TextUnformatted(msg.timestamp.c_str());
         ImGui::PopStyleColor();
         ImGui::SameLine(0, 0);
 
         cursor_x = pad + ts_width;
 
-        if (msg.is_system && msg.nick.empty()) {
-            // system message (separator line, bot messages, etc)
+        // system messages (joins, leaves, bot messages)
+        bool is_system = !msg.subtype.empty() && msg.subtype != "bot_message" &&
+                         msg.subtype != "me_message";
+
+        if (is_system) {
             ImGui::SetCursorPosX(cursor_x);
-            ImGui::PushStyleColor(ImGuiCol_Text, theme.separator_line);
-            ImGui::TextUnformatted(msg.text.c_str());
-            ImGui::PopStyleColor();
-        } else {
-            // nick in its color (deterministic based on name)
-            ImVec4 nick_color = theme.nickColor(msg.nick);
-            if (msg.is_system) {
-                nick_color = theme.text_dim;
-            }
-
-            // right-align the nickname in its column
-            float name_width_px = ImGui::CalcTextSize(msg.nick.c_str()).x;
-            float nick_x = cursor_x + nick_width - name_width_px;
-            ImGui::SetCursorPosX(nick_x);
-            ImGui::PushStyleColor(ImGuiCol_Text, nick_color);
-            ImGui::TextUnformatted(msg.nick.c_str());
-            ImGui::PopStyleColor();
-            ImGui::SameLine(0, 0);
-
-            // message text
-            ImGui::SetCursorPosX(cursor_x + nick_width + 8.0f);
-            ImGui::PushStyleColor(ImGuiCol_Text, theme.text_default);
-
-            // wrap text to fit available width
-            float text_start = cursor_x + nick_width + 8.0f;
-            float avail = width - text_start - pad;
-            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + avail);
-            ImGui::TextUnformatted(msg.text.c_str());
+            ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
+            std::string sys_text = msg.nick.empty() ? msg.text : msg.nick + " " + msg.text;
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + text_avail + nick_width);
+            ImGui::TextUnformatted(sys_text.c_str());
             ImGui::PopTextWrapPos();
             ImGui::PopStyleColor();
+            continue;
+        }
+
+        // nick color (deterministic from user_id)
+        ImVec4 nick_color = theme.nickColor(msg.user_id);
+
+        // right-align nick in its column
+        float name_width_px = ImGui::CalcTextSize(msg.nick.c_str()).x;
+        float nick_x = cursor_x + nick_width - name_width_px;
+        ImGui::SetCursorPosX(nick_x);
+        ImGui::PushStyleColor(ImGuiCol_Text, nick_color);
+        ImGui::TextUnformatted(msg.nick.c_str());
+        ImGui::PopStyleColor();
+        ImGui::SameLine(0, 0);
+
+        // message text with mrkdwn rendering
+        ImGui::SetCursorPosX(text_start_x);
+
+        auto spans = render::parseMrkdwn(msg.text);
+        if (spans.empty()) {
+            // empty message (file-only, etc)
+            ImGui::NewLine();
+        } else {
+            ImGui::PushTextWrapPos(text_start_x + text_avail);
+            render::renderSpans(spans, text_avail, theme.text_default);
+            ImGui::PopTextWrapPos();
+        }
+
+        // edited indicator
+        if (msg.is_edited) {
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
+            ImGui::TextUnformatted("(edited)");
+            ImGui::PopStyleColor();
+        }
+
+        // file attachments
+        for (auto& f : msg.files) {
+            ImGui::SetCursorPosX(text_start_x);
+            ImGui::PushStyleColor(ImGuiCol_Text, theme.url_color);
+            std::string file_label = "[file: " + f.name + "]";
+            if (f.original_w > 0) {
+                file_label += " " + std::to_string(f.original_w) + "x" +
+                              std::to_string(f.original_h);
+            }
+            ImGui::TextUnformatted(file_label.c_str());
+            ImGui::PopStyleColor();
+        }
+
+        // thread indicator
+        if (msg.reply_count > 0) {
+            ImGui::SetCursorPosX(text_start_x);
+            ImGui::PushStyleColor(ImGuiCol_Text, theme.url_color);
+            std::string thread_label = std::to_string(msg.reply_count) +
+                                       (msg.reply_count == 1 ? " reply" : " replies");
+            ImGui::TextUnformatted(thread_label.c_str());
+            ImGui::PopStyleColor();
+        }
+
+        // reactions
+        if (!msg.reactions.empty()) {
+            ImGui::SetCursorPosX(text_start_x);
+            auto click = render::ReactionBadge::render(msg.reactions, theme, text_avail);
+            // click handling would go here - toggle reaction on/off
         }
     }
 
-    // auto-scroll to bottom
-    if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 10.0f) {
-        ImGui::SetScrollHereY(1.0f);
+    // auto-scroll to bottom when new data arrives and we're already at the bottom
+    if (has_new_data_) {
+        if (auto_scroll_) {
+            ImGui::SetScrollHereY(1.0f);
+        }
+        has_new_data_ = false;
     }
+
+    // track if we're at the bottom for auto-scroll
+    auto_scroll_ = (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 20.0f);
 
     ImGui::EndChild();
     ImGui::PopStyleColor();

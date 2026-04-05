@@ -1,12 +1,22 @@
 #pragma once
 #include "ui/UIManager.h"
-#include <SDL.h>
+#include "app/Config.h"
+#include "slack/SlackClient.h"
+#include "cache/MessageCache.h"
+#include "input/CommandParser.h"
+#include "input/TabComplete.h"
+#include "input/InputHistory.h"
+#include "input/KeyHandler.h"
+#include "util/ThreadPool.h"
 
-// forward declare so we don't drag GL headers into everything
+#include <SDL.h>
+#include <memory>
+
 typedef void* SDL_GLContext;
 
 namespace conduit {
 
+// the big boss. owns everything, wires everything together.
 class Application {
 public:
     Application();
@@ -21,15 +31,50 @@ private:
     bool initOpenGL();
     bool initImGui();
     void loadFonts();
+    void loadConfig();
+    void connectToSlack();
+    void registerCommands();
+    void setupKeybindings();
+    void setupTabCompletion();
+
     void processInput();
+    void processSlackEvents();
     void handleKeyDown(const SDL_KeyboardEvent& key);
+    void handleInputSubmit(const std::string& text);
+
+    // update the UI from real slack data
+    void syncBufferList();
+    void syncBufferView();
+    void syncNickList();
+    void switchToBuffer(int index);
 
     SDL_Window* window_ = nullptr;
     SDL_GLContext gl_context_ = nullptr;
-    ui::UIManager ui_;
     bool running_ = false;
     int window_width_ = 1280;
     int window_height_ = 800;
+
+    // the pieces
+    Config config_;
+    ui::UIManager ui_;
+    std::unique_ptr<slack::SlackClient> client_;
+    std::unique_ptr<cache::Database> db_;
+    std::unique_ptr<cache::MessageCache> msg_cache_;
+    std::unique_ptr<ThreadPool> pool_;
+    input::CommandParser commands_;
+    input::TabComplete tab_complete_;
+    input::InputHistory input_history_;
+    input::KeyHandler keys_;
+
+    // current state
+    slack::ChannelId active_channel_;
+    std::string active_channel_name_;
+    bool needs_channel_sync_ = true;
+    bool needs_message_sync_ = true;
+
+    // token prompt state (for first-run)
+    bool awaiting_token_ = false;
+    std::string token_prompt_field_;
 };
 
 } // namespace conduit

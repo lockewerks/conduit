@@ -6,10 +6,12 @@
 #include "ui/NickList.h"
 #include "ui/InputBar.h"
 #include "ui/StatusBar.h"
+#include "ui/ThreadPanel.h"
+#include "ui/SearchPanel.h"
+#include "ui/CommandPalette.h"
 
 namespace conduit::ui {
 
-// layout config - all the knobs for panel sizing
 struct LayoutConfig {
     float buffer_list_width = 180.0f;
     float nick_list_width = 160.0f;
@@ -27,14 +29,22 @@ public:
 
     void render();
 
-    // sidebar toggles (F5/F6 and F7/F8 per weechat convention)
     void toggleBufferList() { layout_.show_buffer_list = !layout_.show_buffer_list; }
     void toggleNickList() { layout_.show_nick_list = !layout_.show_nick_list; }
 
     Theme& theme() { return theme_; }
     LayoutConfig& layout() { return layout_; }
-    InputBar& inputBar() { return input_bar_; }
+
+    // all the components, exposed so Application can wire them up
+    TitleBar& titleBar() { return title_bar_; }
     BufferList& bufferList() { return buffer_list_; }
+    BufferView& bufferView() { return buffer_view_; }
+    NickList& nickList() { return nick_list_; }
+    InputBar& inputBar() { return input_bar_; }
+    StatusBar& statusBar() { return status_bar_; }
+    ThreadPanel& threadPanel() { return thread_panel_; }
+    SearchPanel& searchPanel() { return search_panel_; }
+    CommandPalette& commandPalette() { return command_palette_; }
 
 private:
     Theme theme_;
@@ -46,6 +56,9 @@ private:
     NickList nick_list_;
     InputBar input_bar_;
     StatusBar status_bar_;
+    ThreadPanel thread_panel_;
+    SearchPanel search_panel_;
+    CommandPalette command_palette_;
 };
 
 } // namespace conduit::ui

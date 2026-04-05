@@ -5,15 +5,14 @@
 
 namespace conduit::ui {
 
-// left sidebar showing channels, DMs, etc
-// right now it's all fake data but the structure is ready for real slack channels
 struct BufferEntry {
     std::string name;
     bool is_active = false;
     bool has_unread = false;
     int unread_count = 0;
     bool is_dm = false;
-    bool is_separator = false; // org header
+    bool is_separator = false;
+    std::string channel_id; // the slack channel ID for switching
 };
 
 class BufferList {
@@ -26,12 +25,13 @@ public:
     void selectNext();
     void selectPrev();
 
+    // replace the entries wholesale (called when channel list changes)
+    void setEntries(const std::vector<BufferEntry>& entries);
     const std::vector<BufferEntry>& entries() const { return entries_; }
 
 private:
     std::vector<BufferEntry> entries_;
     int selected_ = 0;
-    float scroll_y_ = 0.0f;
 };
 
 } // namespace conduit::ui

@@ -9,13 +9,13 @@ public:
     void render(float x, float y, float width, float height, const Theme& theme);
 
     const std::string& getText() const { return text_; }
-    void clear() { text_.clear(); }
-
-    // returns true if the user just hit enter
+    void clear() { text_.clear(); std::memset(input_buf_, 0, sizeof(input_buf_)); }
     bool submitted() const { return submitted_; }
+    void setChannelName(const std::string& name) { channel_name_ = name; }
 
 private:
     std::string text_;
+    std::string channel_name_ = "#general";
     char input_buf_[4096] = {};
     bool submitted_ = false;
     bool focus_input_ = true;
