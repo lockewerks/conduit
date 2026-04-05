@@ -77,6 +77,10 @@ private:
     render::GifRenderer gif_renderer_;
     render::EmojiRenderer emoji_renderer_;
     float last_frame_time_ = 0.0f;
+    float ui_scale_ = 1.0f;
+    bool fonts_need_rebuild_ = false;
+
+    void rebuildFonts();
 
     // current state
     slack::ChannelId active_channel_;

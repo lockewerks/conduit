@@ -18,6 +18,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 #include "stb_image_write.h"
 
 #ifdef _WIN32
@@ -88,13 +89,23 @@ bool Application::initSDL() {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
-    // stupidly simple window creation. no highdpi flag, no centered,
-    // hardcoded position and size. if THIS starts fullscreen then SDL
-    // itself is the problem.
+    // tell windows we handle DPI ourselves so it doesn't bitmap-scale us
+#ifdef _WIN32
+    SetProcessDPIAware();
+#endif
+
+    // size the window to 75% of the screen so it fits on any display
+    SDL_DisplayMode dm;
+    int start_w = 1024, start_h = 700;
+    if (SDL_GetDesktopDisplayMode(0, &dm) == 0) {
+        start_w = dm.w * 3 / 4;
+        start_h = dm.h * 3 / 4;
+    }
+
     window_ = SDL_CreateWindow(
         "Conduit",
-        100, 100,
-        1280, 800,
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        start_w, start_h,
         SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
 
     if (!window_) {
@@ -865,6 +876,13 @@ void Application::run() {
             ui_.statusBar().setTypingUsers(typers);
         }
 
+        // rebuild fonts if scale changed (ctrl+/-)
+        if (fonts_need_rebuild_) {
+            rebuildFonts();
+            ui_.theme().apply(); // re-apply theme after style reset
+            fonts_need_rebuild_ = false;
+        }
+
         // ---- imgui frame ----
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
@@ -1017,13 +1035,80 @@ void Application::processInput() {
 }
 
 void Application::handleKeyDown(const SDL_KeyboardEvent& key) {
-    // ctrl+v: try to paste an image from clipboard.
-    // we do this AFTER imgui processes the event so text paste still works.
-    // if the clipboard has a bitmap (and no text), we upload it as an image.
-    // ctrl+v image paste is handled in processInput() before imgui
+    // ctrl+/- to zoom UI, ctrl+0 to reset. like every electron app ever.
+    if (key.keysym.mod & KMOD_CTRL) {
+        if (key.keysym.sym == SDLK_EQUALS || key.keysym.sym == SDLK_PLUS) {
+            ui_scale_ = std::min(ui_scale_ + 0.1f, 3.0f);
+            fonts_need_rebuild_ = true;
+            return;
+        }
+        if (key.keysym.sym == SDLK_MINUS) {
+            ui_scale_ = std::max(ui_scale_ - 0.1f, 0.5f);
+            fonts_need_rebuild_ = true;
+            return;
+        }
+        if (key.keysym.sym == SDLK_0) {
+            ui_scale_ = 1.0f;
+            fonts_need_rebuild_ = true;
+            return;
+        }
+    }
 
-    // let the keybinding system try
     if (keys_.handleKeyDown(key)) return;
+}
+
+void Application::rebuildFonts() {
+    ImGuiIO& io = ImGui::GetIO();
+    io.Fonts->Clear();
+
+    float font_size = 14.0f * ui_scale_;
+    std::string exe_dir = getExeDir();
+
+    std::vector<std::string> search_paths = {
+        exe_dir + "/assets/fonts/JetBrainsMono-Regular.ttf",
+        exe_dir + "/../assets/fonts/JetBrainsMono-Regular.ttf",
+        "assets/fonts/JetBrainsMono-Regular.ttf",
+    };
+
+    bool loaded = false;
+    for (auto& path : search_paths) {
+        if (std::filesystem::exists(path)) {
+            io.Fonts->AddFontFromFileTTF(path.c_str(), font_size);
+            loaded = true;
+            break;
+        }
+    }
+    if (!loaded) {
+        // imgui default font, scaled
+        ImFontConfig cfg;
+        cfg.SizePixels = font_size;
+        io.Fonts->AddFontDefault(&cfg);
+    }
+
+    // merge emoji font
+    ImFontConfig emoji_cfg;
+    emoji_cfg.MergeMode = true;
+    emoji_cfg.OversampleH = 1;
+    emoji_cfg.OversampleV = 1;
+    static const ImWchar emoji_ranges[] = {
+        0x2600, 0x27BF, 0x2B50, 0x2B55, 0xFE00, 0xFE0F,
+        0x1F300, 0x1F9FF, 0,
+    };
+    std::string emoji_font = "C:\\Windows\\Fonts\\seguiemj.ttf";
+    if (std::filesystem::exists(emoji_font)) {
+        io.Fonts->AddFontFromFileTTF(emoji_font.c_str(), font_size, &emoji_cfg, emoji_ranges);
+    }
+
+    io.Fonts->Build();
+    // recreate the font texture on the GPU
+    ImGui_ImplOpenGL3_DestroyDeviceObjects();
+    ImGui_ImplOpenGL3_CreateDeviceObjects();
+
+    // scale imgui's style to match
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.ScaleAllSizes(ui_scale_);
+
+    LOG_INFO("UI scale: " + std::to_string(ui_scale_) + " font: " + std::to_string(font_size) + "px");
 }
 
 bool Application::tryPasteClipboardImage() {
