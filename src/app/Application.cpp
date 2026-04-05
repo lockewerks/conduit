@@ -1205,12 +1205,13 @@ void Application::handleInputSubmit(const std::string& text) {
         return;
     }
 
-    // optimistic local insert so the message appears immediately.
-    // tag the ts with "pending_" so we can find and remove it when
-    // the real message arrives from slack via socket mode.
-    std::string pending_ts = "pending_" + std::to_string(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
+    // optimistic local insert — use a real epoch timestamp so formatting works,
+    // but add a .999999 fractional part that real slack ts's never have.
+    // after the API call succeeds, we remove this and let socket mode deliver
+    // the real message with slack's official timestamp.
+    auto epoch_ms = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    std::string pending_ts = std::to_string(epoch_ms) + ".999999";
     {
         slack::Message local_msg;
         local_msg.ts = pending_ts;
@@ -1222,12 +1223,10 @@ void Application::handleInputSubmit(const std::string& text) {
 
     pool_->enqueue([this, channel = active_channel_, msg = text, pts = pending_ts]() {
         if (client_->sendMessage(channel, msg)) {
-            // remove the optimistic message now that slack has the real one.
-            // socket mode will deliver the real message with the proper ts.
             msg_cache_->remove(channel, pts);
+            // socket mode will deliver the real message
         } else {
             LOG_ERROR("failed to send message");
-            // remove the optimistic ghost so it doesn't linger
             msg_cache_->remove(channel, pts);
             needs_message_sync_ = true;
         }
@@ -1404,17 +1403,16 @@ void Application::syncBufferList() {
 void Application::syncBufferView() {
     if (!client_ || active_channel_.empty()) return;
 
-    // always fetch fresh from the API so we get file/attachment data
-    // the cache is good for offline fallback but attachments need the
-    // promotion logic in getHistory to turn slack's weird attachment
-    // format into something our renderer understands
-    auto history = client_->getHistory(active_channel_, 100);
-    if (!history.empty()) {
-        msg_cache_->store(active_channel_, history);
-    }
+    // read from cache first — socket mode events already put messages there.
+    // only hit the API if the cache is empty (first load of a channel).
     auto messages = msg_cache_->get(active_channel_, 200);
     if (messages.empty()) {
-        messages = history; // fallback if cache is somehow empty
+        // first time viewing this channel, fetch from API
+        auto history = client_->getHistory(active_channel_, 100);
+        if (!history.empty()) {
+            msg_cache_->store(active_channel_, history);
+            messages = msg_cache_->get(active_channel_, 200);
+        }
     }
 
     // convert to the format BufferView wants
@@ -1510,14 +1508,20 @@ void Application::switchToBuffer(int index) {
     active_channel_ = entries[index].channel_id;
     active_channel_name_ = entries[index].name;
 
-    // update the input bar prompt
     ui_.inputBar().setChannelName(entries[index].name);
     ui_.inputBar().setChannelId(active_channel_);
 
-    // load messages for this channel
+    // show cached messages immediately, fetch fresh from API in background
     needs_message_sync_ = true;
 
-    LOG_DEBUG("switched to buffer: " + entries[index].name);
+    // background fetch so the UI doesn't freeze on channel switch
+    pool_->enqueue([this, ch = active_channel_]() {
+        auto history = client_->getHistory(ch, 100);
+        if (!history.empty()) {
+            msg_cache_->store(ch, history);
+            needs_message_sync_ = true; // refresh with the fresh data
+        }
+    });
 }
 
 // ---- Shutdown ----
