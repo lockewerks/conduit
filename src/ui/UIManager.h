@@ -10,6 +10,7 @@
 #include "ui/SearchPanel.h"
 #include "ui/CommandPalette.h"
 #include "ui/EmojiPicker.h"
+#include "ui/FilePreview.h"
 
 namespace conduit::ui {
 
@@ -55,6 +56,7 @@ public:
     SearchPanel& searchPanel() { return search_panel_; }
     CommandPalette& commandPalette() { return command_palette_; }
     EmojiPicker& emojiPicker() { return emoji_picker_; }
+    FilePreview& filePreview() { return file_preview_; }
 
     // right-click context menu results (checked by Application each frame)
     bool wantsPasteImage() const { return wants_paste_image_; }
@@ -78,6 +80,7 @@ private:
     SearchPanel search_panel_;
     CommandPalette command_palette_;
     EmojiPicker emoji_picker_;
+    FilePreview file_preview_;
 
     // splitter drag state
     bool dragging_left_splitter_ = false;

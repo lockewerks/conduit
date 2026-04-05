@@ -199,6 +199,9 @@ void UIManager::render() {
     if (emoji_picker_.isOpen()) {
         emoji_picker_.render(theme_);
     }
+    if (file_preview_.isOpen()) {
+        file_preview_.render(win_w, win_h, theme_);
+    }
 
     // ---- right-click context menu ----
     wants_paste_image_ = false;

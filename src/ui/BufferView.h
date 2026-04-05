@@ -50,6 +50,14 @@ public:
     ReactionClick lastReactionClick() const { return last_reaction_click_; }
     void clearReactionClick() { last_reaction_click_ = {}; }
 
+    // image click feedback - user clicked an inline image to view it full size
+    struct ImageClick {
+        bool clicked = false;
+        std::string url;
+    };
+    ImageClick lastImageClick() const { return last_image_click_; }
+    void clearImageClick() { last_image_click_ = {}; }
+
 private:
     std::vector<BufferViewMessage> messages_;
     bool auto_scroll_ = true;
@@ -61,6 +69,7 @@ private:
     int selected_index_ = -1;
     std::string selected_ts_;
     ReactionClick last_reaction_click_;
+    ImageClick last_image_click_;
 };
 
 } // namespace conduit::ui

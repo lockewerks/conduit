@@ -48,11 +48,21 @@ void FilePreview::render(float screen_w, float screen_h, const Theme& theme) {
     dl->AddImage((ImTextureID)(intptr_t)texture_.texture_id,
                  {img_x, img_y}, {img_x + img_w, img_y + img_h});
 
-    // filename/url at the bottom so people know what they're looking at
-    ImVec2 url_size = ImGui::CalcTextSize(url_.c_str());
-    float url_x = (screen_w - url_size.x) * 0.5f;
-    float url_y = img_y + img_h + 12.0f;
-    dl->AddText({url_x, url_y}, ImGui::ColorConvertFloat4ToU32(theme.text_dim), url_.c_str());
+    // close hint at the top right
+    std::string close_text = "ESC or click to close";
+    ImVec2 close_size = ImGui::CalcTextSize(close_text.c_str());
+    dl->AddText({screen_w - close_size.x - 16.0f, 12.0f},
+                ImGui::ColorConvertFloat4ToU32(theme.text_dim), close_text.c_str());
+
+    // click on the dimmed background to close
+    if (ImGui::IsMouseClicked(0)) {
+        ImVec2 mouse = ImGui::GetMousePos();
+        // only close if clicking outside the image
+        if (mouse.x < img_x || mouse.x > img_x + img_w ||
+            mouse.y < img_y || mouse.y > img_y + img_h) {
+            close();
+        }
+    }
 }
 
 void FilePreview::fitToScreen(float screen_w, float screen_h, float& out_w, float& out_h) const {
@@ -65,8 +75,8 @@ void FilePreview::fitToScreen(float screen_w, float screen_h, float& out_w, floa
 
     float scale = std::min(max_w / tex_w, max_h / tex_h);
 
-    // don't upscale tiny images to fill the screen, that looks terrible
-    scale = std::min(scale, 1.0f);
+    // cap upscaling at 2x so tiny images don't become pixel soup
+    scale = std::min(scale, 2.0f);
 
     out_w = tex_w * scale;
     out_h = tex_h * scale;

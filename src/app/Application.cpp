@@ -910,6 +910,18 @@ void Application::run() {
             ui_.bufferView().clearReactionClick();
         }
 
+        // image click -> open full-size preview
+        auto ic = ui_.bufferView().lastImageClick();
+        if (ic.clicked && !ic.url.empty()) {
+            auto tex_info = image_renderer_.getTexture(ic.url);
+            ui::FilePreview::TextureInfo fp_tex;
+            fp_tex.texture_id = tex_info.texture_id;
+            fp_tex.width = tex_info.width;
+            fp_tex.height = tex_info.height;
+            ui_.filePreview().open(ic.url, fp_tex);
+            ui_.bufferView().clearImageClick();
+        }
+
         // check if input was submitted (also processed during render)
         if (ui_.inputBar().submitted()) {
             std::string text = ui_.inputBar().getText();
