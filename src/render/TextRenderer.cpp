@@ -215,11 +215,12 @@ void renderSpans(const std::vector<TextSpan>& spans, float wrap_width,
     bool need_sameline = false;
 
     for (auto& span : spans) {
-        // newlines break the inline flow
+        // newlines: tight line feed, no extra padding (terminal style)
         if (span.style == TextSpan::Style::Normal && span.text == "\n") {
             need_sameline = false;
-            ImGui::NewLine();
-            ImGui::SetCursorPosX(start_x);
+            // move down exactly one line height, no ItemSpacing padding
+            float cy = ImGui::GetCursorPosY();
+            ImGui::SetCursorPos({start_x, cy + ImGui::GetTextLineHeight()});
             continue;
         }
 

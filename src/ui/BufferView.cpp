@@ -20,6 +20,8 @@ void BufferView::render(float x, float y, float width, float height, const Theme
     ImGui::SetCursorPos({x, y});
 
     ImGui::PushStyleColor(ImGuiCol_ChildBg, theme.bg_main);
+    // tight spacing inside the chat area - this is a terminal, not a word processor
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {4.0f, 1.0f});
     ImGui::BeginChild("##bufferview", {width, height}, false);
 
     // weechat-style column layout
@@ -181,6 +183,7 @@ void BufferView::render(float x, float y, float width, float height, const Theme
     auto_scroll_ = (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 20.0f);
 
     ImGui::EndChild();
+    ImGui::PopStyleVar(); // ItemSpacing
     ImGui::PopStyleColor();
 }
 
