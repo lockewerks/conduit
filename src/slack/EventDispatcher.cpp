@@ -9,12 +9,14 @@ EventDispatcher::EventDispatcher(const UserId& self_user_id)
 std::optional<SlackEvent> EventDispatcher::dispatch(const nlohmann::json& payload) {
     // socket mode wraps events in a payload.event structure
     if (!payload.contains("event")) {
-        LOG_DEBUG("payload without event field, ignoring");
+        LOG_INFO("dispatcher: payload without 'event' field, keys: " +
+                 payload.dump().substr(0, 200));
         return std::nullopt;
     }
 
     auto& event = payload["event"];
     std::string type = event.value("type", "");
+    LOG_INFO("dispatcher: event type=" + type);
 
     if (type == "message") {
         return handleMessage(event);

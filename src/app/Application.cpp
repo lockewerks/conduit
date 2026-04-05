@@ -817,6 +817,29 @@ void Application::run() {
             ui_.statusBar().setConnectionState(client_->connectionState());
         }
 
+        // poll for new messages every 3 seconds as a fallback.
+        // socket mode SHOULD deliver them in real-time, but if event
+        // subscriptions aren't configured, this keeps things working.
+        if (client_ && client_->isConnected() && !active_channel_.empty() && !poll_in_flight_) {
+            auto now_poll = std::chrono::steady_clock::now();
+            if (now_poll - last_poll_time_ > std::chrono::seconds(3)) {
+                last_poll_time_ = now_poll;
+                poll_in_flight_ = true;
+                pool_->enqueue([this, ch = active_channel_]() {
+                    auto recent = client_->getHistory(ch, 5);
+                    if (!recent.empty()) {
+                        std::string newest_ts = recent.back().ts;
+                        if (newest_ts != last_known_ts_) {
+                            last_known_ts_ = newest_ts;
+                            msg_cache_->store(ch, recent);
+                            needs_message_sync_ = true;
+                        }
+                    }
+                    poll_in_flight_ = false;
+                });
+            }
+        }
+
         // push any decoded images/gifs to the GPU (GL calls must happen on main thread)
         image_renderer_.uploadPending();
         gif_renderer_.uploadPending();
@@ -1242,10 +1265,16 @@ void Application::processSlackEvents() {
     while (client_->pollEvent(event)) {
         switch (event.type) {
         case slack::SlackEvent::Type::MessageNew:
+            LOG_INFO("socket: MessageNew ch=" + event.channel +
+                     " has_msg=" + std::string(event.message ? "yes" : "no") +
+                     " active=" + active_channel_);
             if (event.message) {
+                LOG_INFO("  text: " + event.message->text.substr(0, 50) +
+                         " user: " + event.message->user);
                 msg_cache_->store(event.channel, *event.message);
                 if (event.channel == active_channel_) {
                     needs_message_sync_ = true;
+                    LOG_INFO("  -> needs_message_sync_ = true");
                 }
                 // update unread count for other channels
                 if (event.channel != active_channel_) {
