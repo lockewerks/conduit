@@ -817,21 +817,25 @@ void Application::run() {
             ui_.statusBar().setConnectionState(client_->connectionState());
         }
 
-        // poll for new messages every 3 seconds as a fallback.
-        // socket mode SHOULD deliver them in real-time, but if event
-        // subscriptions aren't configured, this keeps things working.
+        // fast message polling. with a user token in a managed workspace
+        // there's no websocket push available (rtm is deprecated, socket mode
+        // needs bot event subscriptions). so we poll. 2 seconds, background
+        // thread, only fetches 1 message to check if anything changed, then
+        // grabs the full batch if it did. tight and efficient.
         if (client_ && client_->isConnected() && !active_channel_.empty() && !poll_in_flight_) {
             auto now_poll = std::chrono::steady_clock::now();
-            if (now_poll - last_poll_time_ > std::chrono::seconds(3)) {
+            if (now_poll - last_poll_time_ > std::chrono::seconds(2)) {
                 last_poll_time_ = now_poll;
                 poll_in_flight_ = true;
                 pool_->enqueue([this, ch = active_channel_]() {
-                    auto recent = client_->getHistory(ch, 5);
-                    if (!recent.empty()) {
-                        std::string newest_ts = recent.back().ts;
-                        if (newest_ts != last_known_ts_) {
-                            last_known_ts_ = newest_ts;
-                            msg_cache_->store(ch, recent);
+                    // check: fetch just 1 message to see if the channel has new content
+                    auto probe = client_->getHistory(ch, 1);
+                    if (!probe.empty() && probe.back().ts != last_known_ts_) {
+                        // something new — grab a proper batch
+                        last_known_ts_ = probe.back().ts;
+                        auto batch = client_->getHistory(ch, 30);
+                        if (!batch.empty()) {
+                            msg_cache_->store(ch, batch);
                             needs_message_sync_ = true;
                         }
                     }
@@ -1265,16 +1269,10 @@ void Application::processSlackEvents() {
     while (client_->pollEvent(event)) {
         switch (event.type) {
         case slack::SlackEvent::Type::MessageNew:
-            LOG_INFO("socket: MessageNew ch=" + event.channel +
-                     " has_msg=" + std::string(event.message ? "yes" : "no") +
-                     " active=" + active_channel_);
             if (event.message) {
-                LOG_INFO("  text: " + event.message->text.substr(0, 50) +
-                         " user: " + event.message->user);
                 msg_cache_->store(event.channel, *event.message);
                 if (event.channel == active_channel_) {
                     needs_message_sync_ = true;
-                    LOG_INFO("  -> needs_message_sync_ = true");
                 }
                 // update unread count for other channels
                 if (event.channel != active_channel_) {

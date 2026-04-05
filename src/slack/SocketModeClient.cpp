@@ -257,13 +257,8 @@ void SocketModeClient::processMessage(const std::string& msg) {
         }
 
         // pass the payload to our callback
-        std::string env_type = j.value("type", "unknown");
-        LOG_INFO("socket envelope: type=" + env_type + " id=" + envelope_id);
-
         if (event_callback_ && j.contains("payload")) {
             event_callback_(j["payload"]);
-        } else if (!j.contains("payload")) {
-            LOG_WARN("socket envelope has no payload field");
         }
     } catch (const std::exception& e) {
         LOG_ERROR(std::string("failed to process ws message: ") + e.what());
