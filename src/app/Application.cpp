@@ -91,51 +91,20 @@ bool Application::initSDL() {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
-    // create a NORMAL resizable window first — NOT borderless.
-    // then we surgically remove the OS title bar via Win32 API while
-    // keeping the resize frame, minimize, maximize, and snap behavior.
-    // SDL_WINDOW_BORDERLESS was fighting with windows and causing
-    // fullscreen nonsense, so we don't use it at all.
+    // plain borderless window. no Win32 style hacking — that was causing
+    // ghost windows, broken keyboard input, and general misery.
+    // SDL handles borderless just fine, we handle resize via the hit test.
     window_ = SDL_CreateWindow(
         "Conduit",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         window_width_, window_height_,
-        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS |
+        SDL_WINDOW_ALLOW_HIGHDPI);
 
     if (!window_) {
         LOG_ERROR(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
         return false;
     }
-
-    // now strip the OS title bar but keep the resize frame.
-    // WS_POPUP = no caption/menu bar
-    // WS_THICKFRAME = resizable edges (the thing we actually need)
-    // WS_MINIMIZEBOX/MAXIMIZEBOX = enable those via taskbar/snap
-    // WS_SYSMENU = enables alt+f4 and taskbar right-click menu
-#ifdef _WIN32
-    {
-        SDL_SysWMinfo wminfo;
-        SDL_VERSION(&wminfo.version);
-        if (SDL_GetWindowWMInfo(window_, &wminfo)) {
-            HWND hwnd = wminfo.info.win.window;
-            LONG style = WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX |
-                         WS_MAXIMIZEBOX | WS_SYSMENU | WS_VISIBLE;
-            SetWindowLong(hwnd, GWL_STYLE, style);
-
-            // force windows to recalculate the frame
-            SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
-                         SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
-
-            // re-center since the frame change might shift things
-            int sw = GetSystemMetrics(SM_CXSCREEN);
-            int sh = GetSystemMetrics(SM_CYSCREEN);
-            SetWindowPos(hwnd, NULL,
-                         (sw - window_width_) / 2, (sh - window_height_) / 2,
-                         window_width_, window_height_,
-                         SWP_NOZORDER);
-        }
-    }
-#endif
     return true;
 }
 
@@ -894,37 +863,20 @@ void Application::run() {
         ui_.render();
 
         // handle custom title bar window controls
-        // use Win32 API directly because SDL's minimize/maximize don't
-        // always play nice with custom-styled windows
         if (ui_.titleBar().wantsClose()) {
             running_ = false;
         }
-#ifdef _WIN32
-        if (ui_.titleBar().wantsMinimize() || ui_.titleBar().wantsMaximize()) {
-            SDL_SysWMinfo wminfo;
-            SDL_VERSION(&wminfo.version);
-            if (SDL_GetWindowWMInfo(window_, &wminfo)) {
-                HWND hwnd = wminfo.info.win.window;
-                if (ui_.titleBar().wantsMinimize()) {
-                    ShowWindow(hwnd, SW_MINIMIZE);
-                }
-                if (ui_.titleBar().wantsMaximize()) {
-                    if (IsZoomed(hwnd)) {
-                        ShowWindow(hwnd, SW_RESTORE);
-                    } else {
-                        ShowWindow(hwnd, SW_MAXIMIZE);
-                    }
-                }
-            }
+        if (ui_.titleBar().wantsMinimize()) {
+            SDL_MinimizeWindow(window_);
         }
-#else
-        if (ui_.titleBar().wantsMinimize()) SDL_MinimizeWindow(window_);
         if (ui_.titleBar().wantsMaximize()) {
             Uint32 flags = SDL_GetWindowFlags(window_);
-            if (flags & SDL_WINDOW_MAXIMIZED) SDL_RestoreWindow(window_);
-            else SDL_MaximizeWindow(window_);
+            if (flags & SDL_WINDOW_MAXIMIZED) {
+                SDL_RestoreWindow(window_);
+            } else {
+                SDL_MaximizeWindow(window_);
+            }
         }
-#endif
 
         // right-click context menu actions
         if (ui_.wantsPasteImage()) {
@@ -1032,17 +984,13 @@ void Application::run() {
 void Application::processInput() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
-        // check for ctrl+v at the rawest level possible, before imgui or anyone
-        // else can eat it. this is our image paste check.
+        // ctrl+v image paste
         if (event.type == SDL_KEYDOWN &&
             event.key.keysym.sym == SDLK_v &&
             (event.key.keysym.mod & KMOD_CTRL)) {
             if (tryPasteClipboardImage()) {
-                // we pasted an image, skip this event entirely
-                SDL_SetWindowTitle(window_, "Conduit - image uploading...");
-                continue;
+                continue; // ate the event
             }
-            // no image on clipboard, fall through to imgui for text paste
         }
 
         ImGui_ImplSDL2_ProcessEvent(&event);
