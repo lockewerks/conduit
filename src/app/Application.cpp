@@ -54,6 +54,7 @@ bool Application::init() {
     setupKeybindings();
     registerCommands();
     setupTabCompletion();
+    ui_.inputBar().setHistory(&input_history_);
     connectToSlack();
 
     running_ = true;
@@ -195,6 +196,10 @@ void Application::connectToSlack() {
     resolved.app_token = app_token;
 
     client_ = std::make_unique<slack::SlackClient>(resolved, *db_);
+
+    // wire up the image renderer so BufferView can actually show pictures
+    ui_.bufferView().setImageRenderer(&image_renderer_);
+    ui_.bufferView().setAuthToken(user_token);
 
     ui_.statusBar().setOrgName(org.name);
     ui_.statusBar().setConnectionState("connecting...");
@@ -567,6 +572,21 @@ void Application::setupKeybindings() {
             ui_.commandPalette().open();
         }
     });
+    keys_.onAction("open_thread", [this]() {
+        if (!client_ || active_channel_.empty()) return;
+        // use selected message if available, otherwise last message
+        std::string thread_ts = ui_.bufferView().selectedTs();
+        if (thread_ts.empty()) {
+            auto msgs = msg_cache_->get(active_channel_, 1);
+            if (!msgs.empty()) thread_ts = msgs.back().ts;
+        }
+        if (thread_ts.empty()) return;
+        ui_.threadPanel().open(active_channel_, thread_ts);
+        pool_->enqueue([this, ch = active_channel_, ts = thread_ts]() {
+            auto replies = client_->getThreadReplies(ch, ts);
+            ui_.threadPanel().setMessages(replies);
+        });
+    });
     keys_.onAction("escape", [this]() {
         if (ui_.searchPanel().isOpen()) ui_.searchPanel().close();
         else if (ui_.commandPalette().isOpen()) ui_.commandPalette().close();
@@ -742,6 +762,18 @@ void Application::run() {
         last_frame_time_ = now;
         gif_renderer_.update(delta * 1000.0f);
 
+        // prune expired typing indicators (they time out after 5 seconds)
+        {
+            auto now_tp = std::chrono::steady_clock::now();
+            typing_events_.erase(
+                std::remove_if(typing_events_.begin(), typing_events_.end(),
+                    [&](auto& p) { return now_tp >= p.second; }),
+                typing_events_.end());
+            std::vector<std::string> typers;
+            for (auto& te : typing_events_) typers.push_back(te.first);
+            ui_.statusBar().setTypingUsers(typers);
+        }
+
         // ---- imgui frame ----
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
@@ -908,6 +940,21 @@ void Application::processSlackEvents() {
                             .value_or(slack::Channel{}).unread_count + 1);
                     needs_channel_sync_ = true;
                 }
+                // feed thread panel if it's watching this thread
+                if (ui_.threadPanel().isOpen() && event.message->thread_ts == ui_.threadPanel().parentTs()) {
+                    ui_.threadPanel().addMessage(*event.message);
+                }
+                // desktop notification for mentions and DMs
+                if (event.channel != active_channel_) {
+                    bool is_mention = event.message->text.find("<@" + client_->selfUserId() + ">") != std::string::npos;
+                    auto ch_info = client_->channelCache().get(event.channel);
+                    bool is_dm = ch_info && (ch_info->type == slack::ChannelType::DirectMessage);
+                    if (is_mention || is_dm) {
+                        std::string title = ch_info ? ch_info->name : event.channel;
+                        std::string preview = event.message->text.substr(0, 80);
+                        notifications_.notify(title, client_->displayName(event.message->user) + ": " + preview);
+                    }
+                }
             }
             break;
 
@@ -974,6 +1021,19 @@ void Application::processSlackEvents() {
                 }
             }
             break;
+
+        case slack::SlackEvent::Type::TypingStart: {
+            if (client_ && event.user != client_->selfUserId()) {
+                std::string name = client_->displayName(event.user);
+                auto expiry = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                bool found = false;
+                for (auto& te : typing_events_) {
+                    if (te.first == name) { te.second = expiry; found = true; break; }
+                }
+                if (!found) typing_events_.push_back({name, expiry});
+            }
+            break;
+        }
 
         default:
             break;
@@ -1053,16 +1113,13 @@ void Application::syncBufferView() {
         vm.is_edited = msg.is_edited;
         vm.ts = msg.ts;
 
-        // kick off background downloads for any image attachments so they're
-        // ready to render by the time the user scrolls to them
+        // queue image downloads so they're ready by the time we render
         for (auto& f : msg.files) {
-            if (f.mimetype.find("image/") == 0 && !f.thumb_360.empty()) {
-                std::string url = f.thumb_360;
-                auto info = image_renderer_.getTexture(url);
-                if (!info.loading && info.texture_id == 0 && !info.failed) {
-                    pool_->enqueue([this, u = url]() {
-                        image_renderer_.getTexture(u);
-                    });
+            if (f.mimetype.find("image/") == 0) {
+                std::string img_url = f.thumb_360.empty() ? f.url_private : f.thumb_360;
+                if (!img_url.empty()) {
+                    image_renderer_.requestImage(img_url,
+                        config_.get().orgs[0].user_token, *pool_);
                 }
             }
         }
@@ -1126,6 +1183,7 @@ void Application::switchToBuffer(int index) {
 
     // update the input bar prompt
     ui_.inputBar().setChannelName(entries[index].name);
+    ui_.inputBar().setChannelId(active_channel_);
 
     // load messages for this channel
     needs_message_sync_ = true;

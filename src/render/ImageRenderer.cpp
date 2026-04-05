@@ -1,6 +1,8 @@
 #include "render/ImageRenderer.h"
 #include "util/Logger.h"
 
+#include <curl/curl.h>
+
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -10,6 +12,14 @@
 #include "stb_image.h"
 
 namespace conduit::render {
+
+// curl callback for downloading binary data into a vector
+static size_t imgWriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
+    auto* vec = static_cast<std::vector<uint8_t>*>(userp);
+    size_t total = size * nmemb;
+    vec->insert(vec->end(), (uint8_t*)contents, (uint8_t*)contents + total);
+    return total;
+}
 
 ImageRenderer::ImageRenderer(float max_width, float max_height)
     : max_width_(max_width), max_height_(max_height) {}
@@ -139,6 +149,86 @@ ImVec2 ImageRenderer::scaledSize(int orig_w, int orig_h) const {
     }
 
     return {w, h};
+}
+
+// the whole point of this class: download an image, decode it, get it on the GPU
+// all without blocking the main thread because we're not animals
+void ImageRenderer::requestImage(const std::string& url, const std::string& auth_token,
+                                  conduit::ThreadPool& pool) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // already have it or already fetching it? bail.
+        if (textures_.count(url) && (textures_[url].texture_id || textures_[url].failed)) return;
+        if (in_flight_.count(url)) return;
+        in_flight_.insert(url);
+        textures_[url] = TextureInfo{0, 0, 0, true, false};
+    }
+
+    pool.enqueue([this, url, auth_token]() {
+        CURL* curl = curl_easy_init();
+        if (!curl) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            textures_[url].loading = false;
+            textures_[url].failed = true;
+            in_flight_.erase(url);
+            return;
+        }
+
+        std::vector<uint8_t> data;
+        struct curl_slist* headers = nullptr;
+        std::string auth = "Authorization: Bearer " + auth_token;
+        headers = curl_slist_append(headers, auth.c_str());
+
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, imgWriteCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &data);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+
+        CURLcode res = curl_easy_perform(curl);
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+
+        if (res != CURLE_OK || data.empty()) {
+            LOG_WARN("image download failed: " + url.substr(0, 60));
+            std::lock_guard<std::mutex> lock(mutex_);
+            textures_[url].loading = false;
+            textures_[url].failed = true;
+            in_flight_.erase(url);
+            return;
+        }
+
+        // decode on this worker thread so we don't block rendering
+        int w, h, channels;
+        unsigned char* pixels = stbi_load_from_memory(data.data(), (int)data.size(),
+                                                       &w, &h, &channels, 4);
+        if (!pixels) {
+            LOG_WARN("image decode failed: " + url.substr(0, 60));
+            std::lock_guard<std::mutex> lock(mutex_);
+            textures_[url].loading = false;
+            textures_[url].failed = true;
+            in_flight_.erase(url);
+            return;
+        }
+
+        PendingUpload upload;
+        upload.url = url;
+        upload.width = w;
+        upload.height = h;
+        upload.data.assign(pixels, pixels + (w * h * 4));
+        stbi_image_free(pixels);
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            pending_uploads_.push_back(std::move(upload));
+            in_flight_.erase(url);
+        }
+
+        LOG_DEBUG("image decoded: " + std::to_string(w) + "x" + std::to_string(h));
+    });
+
+    evictOldest();
 }
 
 } // namespace conduit::render

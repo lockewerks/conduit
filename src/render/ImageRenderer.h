@@ -1,9 +1,11 @@
 #pragma once
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <mutex>
 #include <imgui.h>
+#include "util/ThreadPool.h"
 
 // forward declare so we don't include GL everywhere
 typedef unsigned int GLuint;
@@ -38,6 +40,10 @@ public:
     // render a placeholder while loading
     void renderPlaceholder(const std::string& filename, float width, float height);
 
+    // kick off an async download + decode for an image URL
+    void requestImage(const std::string& url, const std::string& auth_token,
+                      conduit::ThreadPool& pool);
+
     // LRU management
     void setMaxTextures(int max) { max_textures_ = max; }
     void evictOldest();
@@ -60,6 +66,9 @@ private:
         int width, height;
     };
     std::vector<PendingUpload> pending_uploads_;
+
+    // URLs currently being downloaded so we don't double-fetch
+    std::unordered_set<std::string> in_flight_;
 
     // LRU tracking
     std::vector<std::string> access_order_;

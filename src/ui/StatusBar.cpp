@@ -54,6 +54,20 @@ void StatusBar::render(float x, float y, float width, float height, const Theme&
         ImGui::PopStyleColor();
     }
 
+    // typing indicator - who's mashing their keyboard right now
+    if (!typing_users_.empty()) {
+        ImGui::SameLine(0, 12.0f);
+        std::string typing;
+        if (typing_users_.size() == 1) {
+            typing = typing_users_[0] + " is typing...";
+        } else if (typing_users_.size() == 2) {
+            typing = typing_users_[0] + " and " + typing_users_[1] + " are typing...";
+        } else {
+            typing = "several people are typing...";
+        }
+        ImGui::TextUnformatted(typing.c_str());
+    }
+
     ImGui::PopStyleColor(); // text_dim
 
     // clock on the right because what's a status bar without a clock

@@ -7,12 +7,14 @@
 #include "input/TabComplete.h"
 #include "input/InputHistory.h"
 #include "input/KeyHandler.h"
+#include "notify/NotificationManager.h"
 #include "util/ThreadPool.h"
 #include "render/ImageRenderer.h"
 #include "render/GifRenderer.h"
 #include "render/EmojiRenderer.h"
 
 #include <SDL.h>
+#include <chrono>
 #include <memory>
 
 typedef void* SDL_GLContext;
@@ -80,6 +82,12 @@ private:
     std::string active_channel_name_;
     bool needs_channel_sync_ = true;
     bool needs_message_sync_ = true;
+
+    // typing indicators from other users
+    std::vector<std::pair<std::string, std::chrono::steady_clock::time_point>> typing_events_;
+
+    // desktop notifications for mentions and DMs
+    notify::NotificationManager notifications_;
 
     // token prompt state (for first-run)
     bool awaiting_token_ = false;

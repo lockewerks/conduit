@@ -70,6 +70,22 @@ void InputBar::render(float x, float y, float width, float height, const Theme& 
                     ImGui::ColorConvertFloat4ToU32(theme.nick_colors[0]), 1.0f);
     }
 
+    // input history: up arrow recalls past messages, because who wants to retype things
+    if (ImGui::IsItemFocused() && history_) {
+        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow) && input_buf_[0] == '\0') {
+            std::string prev = history_->prev(channel_id_);
+            if (!prev.empty()) {
+                strncpy(input_buf_, prev.c_str(), sizeof(input_buf_) - 1);
+                input_buf_[sizeof(input_buf_) - 1] = '\0';
+            }
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) {
+            std::string next = history_->next(channel_id_);
+            strncpy(input_buf_, next.c_str(), sizeof(input_buf_) - 1);
+            input_buf_[sizeof(input_buf_) - 1] = '\0';
+        }
+    }
+
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(2);
     ImGui::PopItemWidth();

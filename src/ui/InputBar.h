@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include "ui/Theme.h"
+#include "input/InputHistory.h"
 
 namespace conduit::ui {
 
@@ -12,6 +13,8 @@ public:
     void clear() { text_.clear(); std::memset(input_buf_, 0, sizeof(input_buf_)); }
     bool submitted() const { return submitted_; }
     void setChannelName(const std::string& name) { channel_name_ = name; }
+    void setHistory(input::InputHistory* h) { history_ = h; }
+    void setChannelId(const std::string& id) { channel_id_ = id; }
 
 private:
     std::string text_;
@@ -19,6 +22,8 @@ private:
     char input_buf_[4096] = {};
     bool submitted_ = false;
     bool focus_input_ = true;
+    input::InputHistory* history_ = nullptr;
+    std::string channel_id_;
 };
 
 } // namespace conduit::ui
