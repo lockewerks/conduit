@@ -199,6 +199,40 @@ void UIManager::render() {
         emoji_picker_.render(theme_);
     }
 
+    // ---- right-click context menu ----
+    // available everywhere in the window, standard cut/copy/paste stuff
+    wants_paste_image_ = false;
+    if (ImGui::BeginPopupContextWindow("##context_menu", ImGuiPopupFlags_MouseButtonRight)) {
+        if (ImGui::MenuItem("Cut", "Ctrl+X")) {
+            // imgui handles cut in input widgets natively, but this gives
+            // the user something to click if they're feeling mousey
+            ImGuiIO& io = ImGui::GetIO();
+            io.AddKeyEvent(ImGuiKey_X, true);
+            io.AddKeyEvent(ImGuiMod_Ctrl, true);
+        }
+        if (ImGui::MenuItem("Copy", "Ctrl+C")) {
+            ImGuiIO& io = ImGui::GetIO();
+            io.AddKeyEvent(ImGuiKey_C, true);
+            io.AddKeyEvent(ImGuiMod_Ctrl, true);
+        }
+        if (ImGui::MenuItem("Paste", "Ctrl+V")) {
+            ImGuiIO& io = ImGui::GetIO();
+            io.AddKeyEvent(ImGuiKey_V, true);
+            io.AddKeyEvent(ImGuiMod_Ctrl, true);
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Paste Image", "Ctrl+V")) {
+            wants_paste_image_ = true;
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Select All", "Ctrl+A")) {
+            ImGuiIO& io = ImGui::GetIO();
+            io.AddKeyEvent(ImGuiKey_A, true);
+            io.AddKeyEvent(ImGuiMod_Ctrl, true);
+        }
+        ImGui::EndPopup();
+    }
+
     ImGui::End();
 }
 

@@ -926,6 +926,12 @@ void Application::run() {
         }
 #endif
 
+        // right-click menu "Paste Image" action
+        if (ui_.wantsPasteImage()) {
+            tryPasteClipboardImage();
+            ui_.clearPasteImage();
+        }
+
         // detect channel switch from mouse clicks (imgui processes clicks during render)
         int cur_buf = ui_.bufferList().selectedIndex();
         if (cur_buf != last_buf_idx && cur_buf >= 0) {
@@ -1019,6 +1025,17 @@ void Application::run() {
 void Application::processInput() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+        // intercept ctrl+v BEFORE imgui gets it, so we can check for
+        // clipboard images. if there's a bitmap, we handle it ourselves.
+        // if not, imgui gets the event and does normal text paste.
+        if (event.type == SDL_KEYDOWN &&
+            event.key.keysym.sym == SDLK_v &&
+            (event.key.keysym.mod & KMOD_CTRL)) {
+            if (tryPasteClipboardImage()) {
+                continue; // ate the event, don't pass to imgui
+            }
+        }
+
         ImGui_ImplSDL2_ProcessEvent(&event);
 
         switch (event.type) {
@@ -1051,10 +1068,8 @@ void Application::processInput() {
 void Application::handleKeyDown(const SDL_KeyboardEvent& key) {
     // ctrl+v: check for clipboard image before letting imgui handle text paste.
     // text paste still works fine - we only intercept when there's a bitmap.
-    if (key.keysym.sym == SDLK_v && (key.keysym.mod & KMOD_CTRL)) {
-        if (tryPasteClipboardImage()) return;
-        // no image? fall through to normal text paste via imgui
-    }
+    // ctrl+v is handled in processInput() before imgui gets it
+    // so we don't need to check here
 
     // let the keybinding system try first
     if (keys_.handleKeyDown(key)) return;
