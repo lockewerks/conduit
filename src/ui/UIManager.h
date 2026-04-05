@@ -18,6 +18,15 @@ struct LayoutConfig {
     float input_bar_height = 28.0f;
     float status_bar_height = 20.0f;
     float title_bar_height = 24.0f;
+    float thread_panel_width = 350.0f;
+
+    // min/max constraints for draggable panes
+    float buffer_list_min = 100.0f;
+    float buffer_list_max = 400.0f;
+    float nick_list_min = 80.0f;
+    float nick_list_max = 350.0f;
+    float thread_panel_min = 200.0f;
+    float thread_panel_max = 600.0f;
 
     bool show_buffer_list = true;
     bool show_nick_list = true;
@@ -35,7 +44,6 @@ public:
     Theme& theme() { return theme_; }
     LayoutConfig& layout() { return layout_; }
 
-    // all the components, exposed so Application can wire them up
     TitleBar& titleBar() { return title_bar_; }
     BufferList& bufferList() { return buffer_list_; }
     BufferView& bufferView() { return buffer_view_; }
@@ -59,6 +67,18 @@ private:
     ThreadPanel thread_panel_;
     SearchPanel search_panel_;
     CommandPalette command_palette_;
+
+    // splitter drag state
+    bool dragging_left_splitter_ = false;
+    bool dragging_right_splitter_ = false;
+    bool dragging_thread_splitter_ = false;
+
+    // draw a vertical splitter handle and return true if it's being dragged
+    bool verticalSplitter(const char* id, float x, float y, float height, float* width_to_adjust,
+                          float min_w, float max_w, bool drag_left = false);
+
+    // track the last window size so we can scale panes proportionally on resize
+    float last_win_w_ = 0.0f;
 };
 
 } // namespace conduit::ui

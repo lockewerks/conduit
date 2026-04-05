@@ -1,13 +1,58 @@
 #include "ui/UIManager.h"
 #include <imgui.h>
+#include <algorithm>
 
 namespace conduit::ui {
 
-UIManager::UIManager() {
-    // theme gets applied later by Application::init after ImGui context exists
+UIManager::UIManager() {}
+
+// invisible vertical splitter handle that you can drag to resize panes
+// returns true while actively being dragged
+bool UIManager::verticalSplitter(const char* id, float x, float y, float height,
+                                  float* width_to_adjust, float min_w, float max_w,
+                                  bool drag_left) {
+    const float handle_w = 6.0f; // clickable area width
+    const float visual_w = 1.0f; // the visible line
+
+    ImVec2 screen_pos = ImGui::GetWindowPos();
+    ImVec2 p0 = {screen_pos.x + x - handle_w * 0.5f, screen_pos.y + y};
+    ImVec2 p1 = {screen_pos.x + x + handle_w * 0.5f, screen_pos.y + y + height};
+
+    ImGui::SetCursorScreenPos(p0);
+    ImGui::InvisibleButton(id, {handle_w, height});
+
+    bool hovered = ImGui::IsItemHovered();
+    bool active = ImGui::IsItemActive();
+
+    // change cursor to resize when hovering
+    if (hovered || active) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    }
+
+    // draw the splitter line - brighter when hovered/dragged
+    ImU32 color = hovered || active
+        ? ImGui::ColorConvertFloat4ToU32({0.5f, 0.5f, 0.6f, 1.0f})
+        : ImGui::ColorConvertFloat4ToU32({0.2f, 0.2f, 0.25f, 1.0f});
+
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        {screen_pos.x + x - visual_w * 0.5f, screen_pos.y + y},
+        {screen_pos.x + x + visual_w * 0.5f, screen_pos.y + y + height},
+        color);
+
+    // handle dragging
+    if (active && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        float delta = ImGui::GetIO().MouseDelta.x;
+        if (drag_left) delta = -delta; // for right-side panes, dragging left makes them wider
+        *width_to_adjust += delta;
+        *width_to_adjust = std::clamp(*width_to_adjust, min_w, max_w);
+        return true;
+    }
+
+    return false;
 }
 
 void UIManager::render() {
+    // fill the entire OS window - the OS handles the title bar, min/max/close
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
@@ -24,14 +69,49 @@ void UIManager::render() {
     float win_w = ImGui::GetContentRegionAvail().x;
     float win_h = ImGui::GetContentRegionAvail().y;
 
-    // horizontal layout
+    // proportionally scale pane widths when the window is resized
+    if (last_win_w_ > 0.0f && win_w != last_win_w_) {
+        float ratio = win_w / last_win_w_;
+        layout_.buffer_list_width = std::clamp(
+            layout_.buffer_list_width * ratio,
+            layout_.buffer_list_min, layout_.buffer_list_max);
+        layout_.nick_list_width = std::clamp(
+            layout_.nick_list_width * ratio,
+            layout_.nick_list_min, layout_.nick_list_max);
+        if (thread_panel_.isOpen()) {
+            layout_.thread_panel_width = std::clamp(
+                layout_.thread_panel_width * ratio,
+                layout_.thread_panel_min, layout_.thread_panel_max);
+        }
+    }
+    last_win_w_ = win_w;
+
+    // horizontal layout math
     float sidebar_left = layout_.show_buffer_list ? layout_.buffer_list_width : 0.0f;
     float sidebar_right = layout_.show_nick_list ? layout_.nick_list_width : 0.0f;
+    float thread_w = thread_panel_.isOpen() ? layout_.thread_panel_width : 0.0f;
 
-    // if thread panel is open, give it some space from the right
-    float thread_width = thread_panel_.isOpen() ? 350.0f : 0.0f;
+    // make sure the center pane doesn't get squeezed to nothing
+    float min_center = 200.0f;
+    float used = sidebar_left + sidebar_right + thread_w;
+    if (used + min_center > win_w) {
+        // scale everything down proportionally to fit
+        float excess = used + min_center - win_w;
+        float total = sidebar_left + sidebar_right + thread_w;
+        if (total > 0) {
+            if (sidebar_left > 0) sidebar_left -= excess * (sidebar_left / total);
+            if (sidebar_right > 0) sidebar_right -= excess * (sidebar_right / total);
+            if (thread_w > 0) thread_w -= excess * (thread_w / total);
+            layout_.buffer_list_width = std::max(sidebar_left, layout_.buffer_list_min);
+            layout_.nick_list_width = std::max(sidebar_right, layout_.nick_list_min);
+            layout_.thread_panel_width = std::max(thread_w, layout_.thread_panel_min);
+            sidebar_left = layout_.show_buffer_list ? layout_.buffer_list_width : 0.0f;
+            sidebar_right = layout_.show_nick_list ? layout_.nick_list_width : 0.0f;
+            thread_w = thread_panel_.isOpen() ? layout_.thread_panel_width : 0.0f;
+        }
+    }
 
-    float center_width = win_w - sidebar_left - sidebar_right - thread_width;
+    float center_width = win_w - sidebar_left - sidebar_right - thread_w;
 
     // vertical layout
     float title_h = layout_.title_bar_height;
@@ -39,7 +119,9 @@ void UIManager::render() {
     float input_h = layout_.input_bar_height;
     float center_height = win_h - title_h - input_h - status_h;
 
-    // title bar
+    // ---- render panels ----
+
+    // title bar (full width)
     title_bar_.render(0, 0, win_w, title_h, theme_);
 
     // left sidebar
@@ -50,13 +132,13 @@ void UIManager::render() {
     // main chat area
     buffer_view_.render(sidebar_left, title_h, center_width, center_height, theme_);
 
-    // thread panel (right of main chat, left of nick list)
+    // thread panel
     if (thread_panel_.isOpen()) {
         thread_panel_.render(sidebar_left + center_width, title_h,
-                             thread_width, center_height, theme_);
+                             thread_w, center_height, theme_);
     }
 
-    // right sidebar (nick list)
+    // right sidebar
     if (layout_.show_nick_list) {
         nick_list_.render(win_w - sidebar_right, title_h, sidebar_right, center_height, theme_);
     }
@@ -67,7 +149,31 @@ void UIManager::render() {
     // status bar
     status_bar_.render(0, title_h + center_height + input_h, win_w, status_h, theme_);
 
-    // overlays (rendered on top of everything)
+    // ---- draggable splitters between panes ----
+
+    // splitter between buffer list and chat
+    if (layout_.show_buffer_list) {
+        verticalSplitter("##split_left", sidebar_left, title_h, center_height,
+                         &layout_.buffer_list_width,
+                         layout_.buffer_list_min, layout_.buffer_list_max);
+    }
+
+    // splitter between chat and thread panel (or nick list if no thread)
+    if (thread_panel_.isOpen()) {
+        verticalSplitter("##split_thread", sidebar_left + center_width, title_h, center_height,
+                         &layout_.thread_panel_width,
+                         layout_.thread_panel_min, layout_.thread_panel_max, true);
+    }
+
+    // splitter between thread/chat and nick list
+    if (layout_.show_nick_list) {
+        verticalSplitter("##split_right", win_w - sidebar_right, title_h, center_height,
+                         &layout_.nick_list_width,
+                         layout_.nick_list_min, layout_.nick_list_max, true);
+    }
+
+    // ---- overlays ----
+
     if (search_panel_.isOpen()) {
         search_panel_.render(sidebar_left, title_h, center_width, center_height, theme_);
     }
