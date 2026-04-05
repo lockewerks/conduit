@@ -13,6 +13,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #endif
+#include <SDL_syswm.h>
 #include <GL/gl.h>
 
 #include <filesystem>
@@ -98,8 +99,28 @@ bool Application::initSDL() {
         return false;
     }
 
-    // tell SDL how to handle hit testing for our borderless window
-    // this lets the OS handle edge resizing while we handle the title bar
+    // borderless windows on windows lose the resize frame style.
+    // we need to add WS_THICKFRAME back manually so the OS handles edge
+    // resizing for us. without this the hit test returns resize constants
+    // but windows just ignores them because there's no thick frame to grab.
+#ifdef _WIN32
+    {
+        SDL_SysWMinfo wminfo;
+        SDL_VERSION(&wminfo.version);
+        if (SDL_GetWindowWMInfo(window_, &wminfo)) {
+            HWND hwnd = wminfo.info.win.window;
+            LONG style = GetWindowLong(hwnd, GWL_STYLE);
+            style |= WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+            SetWindowLong(hwnd, GWL_STYLE, style);
+            // poke the window so it picks up the new style
+            SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+                         SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+        }
+    }
+#endif
+
+    // hit test callback - tells the OS which parts of our window are
+    // draggable, resizable, or just normal client area
     SDL_SetWindowHitTest(window_, [](SDL_Window* win, const SDL_Point* pt, void* data) -> SDL_HitTestResult {
         int w, h;
         SDL_GetWindowSize(win, &w, &h);
