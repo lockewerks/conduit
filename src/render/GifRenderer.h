@@ -49,6 +49,8 @@ public:
     // upload pending decoded frames on the main thread
     void uploadPending();
 
+    void setCookie(const std::string& cookie) { cookie_ = cookie; }
+
     // kick off async download + decode for a GIF URL
     void requestGif(const std::string& url, const std::string& auth_token,
                     conduit::ThreadPool& pool);
@@ -66,6 +68,8 @@ private:
         int height = 0;
     };
     std::vector<PendingGifUpload> pending_gif_uploads_;
+
+    std::string cookie_;
 
     // URLs currently being fetched so we don't fire off duplicate requests
     std::unordered_set<std::string> in_flight_;

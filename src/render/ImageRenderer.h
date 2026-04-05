@@ -44,6 +44,8 @@ public:
     void requestImage(const std::string& url, const std::string& auth_token,
                       conduit::ThreadPool& pool);
 
+    void setCookie(const std::string& cookie) { cookie_ = cookie; }
+
     // LRU management
     void setMaxTextures(int max) { max_textures_ = max; }
     void evictOldest();
@@ -66,6 +68,8 @@ private:
         int width, height;
     };
     std::vector<PendingUpload> pending_uploads_;
+
+    std::string cookie_; // d= cookie for xoxc tokens
 
     // URLs currently being downloaded so we don't double-fetch
     std::unordered_set<std::string> in_flight_;

@@ -305,6 +305,12 @@ void Application::connectToSlack() {
     ui_.bufferView().setGifRenderer(&gif_renderer_);
     ui_.bufferView().setAuthToken(user_token);
 
+    // xoxc tokens need the d cookie on image/gif downloads too
+    if (!d_cookie.empty()) {
+        image_renderer_.setCookie(d_cookie);
+        gif_renderer_.setCookie(d_cookie);
+    }
+
     ui_.statusBar().setOrgName(org_name);
     ui_.statusBar().setConnectionState("connecting...");
 

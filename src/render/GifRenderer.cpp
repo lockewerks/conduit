@@ -123,6 +123,10 @@ void GifRenderer::requestGif(const std::string& url, const std::string& auth_tok
         if (is_slack) {
             std::string auth = "Authorization: Bearer " + auth_token;
             headers = curl_slist_append(headers, auth.c_str());
+            if (!cookie_.empty()) {
+                std::string cookie_hdr = "Cookie: d=" + cookie_;
+                headers = curl_slist_append(headers, cookie_hdr.c_str());
+            }
         }
 
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
