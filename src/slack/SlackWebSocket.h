@@ -43,6 +43,10 @@ private:
     lws_context* lws_ctx_ = nullptr;
     lws* wsi_ = nullptr;
     std::string recv_buffer_;
+    std::mutex send_mutex_;
+    std::string pending_send_;
+    int ping_id_ = 1;
+    std::chrono::steady_clock::time_point last_ping_;
 
     void wsThreadFunc();
     void processMessage(const std::string& msg);

@@ -26,6 +26,7 @@ int SlackWebSocket::lwsCallback(struct lws* wsi, int reason, void* user,
         LOG_INFO("slack websocket connected");
         client->connected_ = true;
         client->reconnect_delay_ = 1;
+        client->last_ping_ = std::chrono::steady_clock::now();
         break;
 
     case LWS_CALLBACK_CLIENT_RECEIVE:
@@ -37,6 +38,36 @@ int SlackWebSocket::lwsCallback(struct lws* wsi, int reason, void* user,
             }
         }
         break;
+
+    case LWS_CALLBACK_CLIENT_WRITEABLE: {
+        std::lock_guard<std::mutex> lock(client->send_mutex_);
+        if (!client->pending_send_.empty()) {
+            std::vector<uint8_t> buf(LWS_PRE + client->pending_send_.size());
+            memcpy(buf.data() + LWS_PRE, client->pending_send_.data(),
+                   client->pending_send_.size());
+            lws_write(wsi, buf.data() + LWS_PRE, client->pending_send_.size(),
+                       LWS_WRITE_TEXT);
+            client->pending_send_.clear();
+        }
+        break;
+    }
+
+    case LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER: {
+        // inject the d= cookie into the websocket upgrade handshake
+        // without this, xoxc tokens get 401 invalid_auth
+        if (client && !client->cookie_.empty()) {
+            unsigned char **p = (unsigned char **)in;
+            unsigned char *end = (*p) + len;
+            std::string cookie_val = "d=" + client->cookie_;
+            if (lws_add_http_header_by_name(wsi,
+                    (const unsigned char *)"Cookie:",
+                    (const unsigned char *)cookie_val.c_str(),
+                    (int)cookie_val.size(), p, end)) {
+                return -1;
+            }
+        }
+        break;
+    }
 
     case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
         LOG_ERROR(std::string("websocket error: ") +
@@ -84,6 +115,8 @@ void SlackWebSocket::wsThreadFunc() {
         // connect directly to wss-primary.slack.com with token in URL
         // this is exactly what the browser client does
         std::string host = "wss-primary.slack.com";
+        // token goes in the URL, cookie goes in the HTTP Cookie header
+        // (added via LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER)
         std::string path = "/?token=" + token_ +
                            "&sync_desync=1&slack_client=desktop&batch_presence_aware=1";
 
@@ -140,9 +173,25 @@ void SlackWebSocket::wsThreadFunc() {
             continue;
         }
 
-        // service loop
+        // service loop with keepalive pings every 30 seconds
         while (!should_stop_ && lws_ctx_) {
             lws_service(lws_ctx_, 100);
+
+            // send a ping every 30 seconds to keep the connection alive
+            // slack will drop idle websockets without these
+            if (connected_ && wsi_) {
+                auto now = std::chrono::steady_clock::now();
+                if (now - last_ping_ > std::chrono::seconds(30)) {
+                    last_ping_ = now;
+                    std::string ping = "{\"type\":\"ping\",\"id\":" +
+                                       std::to_string(ping_id_++) + "}";
+                    {
+                        std::lock_guard<std::mutex> lock(send_mutex_);
+                        pending_send_ = ping;
+                    }
+                    lws_callback_on_writable(wsi_);
+                }
+            }
         }
 
         if (lws_ctx_) {
@@ -165,23 +214,20 @@ void SlackWebSocket::processMessage(const std::string& msg) {
 
         std::string type = j.value("type", "");
 
-        // the web client websocket sends different event formats than socket mode.
-        // most events have a "type" field directly (not wrapped in envelope/payload).
         if (type == "hello") {
             LOG_INFO("slack websocket handshake complete");
             return;
         }
 
         if (type == "pong") {
-            return; // keepalive response, ignore
+            return;
         }
 
-        // pass everything else to the callback
         if (msg_callback_) {
             msg_callback_(j);
         }
-    } catch (const std::exception& e) {
-        // not all messages are JSON (some are binary pings)
+    } catch (...) {
+        // not all messages are JSON (binary pings, etc)
     }
 }
 
