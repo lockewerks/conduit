@@ -1046,9 +1046,9 @@ void Application::rebuildFonts() {
     font_cfg.PixelSnapH = true; // snap glyphs to pixel grid
 
     std::vector<std::string> search_paths = {
-        exe_dir + "/assets/fonts/JetBrainsMono-Regular.ttf",
-        exe_dir + "/../assets/fonts/JetBrainsMono-Regular.ttf",
-        "assets/fonts/JetBrainsMono-Regular.ttf",
+        exe_dir + "/assets/fonts/LektonNerdFontMono-Regular.ttf",
+        exe_dir + "/../assets/fonts/LektonNerdFontMono-Regular.ttf",
+        "assets/fonts/LektonNerdFontMono-Regular.ttf",
     };
 
     bool loaded = false;

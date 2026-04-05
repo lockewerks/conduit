@@ -21,98 +21,93 @@ void BufferView::render(float x, float y, float width, float height, const Theme
     ImGui::SetCursorPos({x, y});
 
     ImGui::PushStyleColor(ImGuiCol_ChildBg, theme.bg_main);
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {4.0f, 1.0f});
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {4.0f, 0.0f}); // zero vertical gap between lines
     ImGui::BeginChild("##bufferview", {width, height}, false);
 
-    // escape clears message selection
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
         selected_index_ = -1;
         selected_ts_.clear();
     }
 
-    const float pad = 8.0f;
-    const float ts_width = 42.0f;
-    const float nick_width = 110.0f;
-    const float sep_gap = 8.0f;
-    const float text_x = pad + ts_width + nick_width + sep_gap;
-    const float text_avail = std::max(100.0f, width - text_x - pad);
+    const float pad = 4.0f;
+    // IRC style: "HH:MM <nick> message text"
+    // everything left-aligned, every message attributed, no collapsing
 
     if (messages_.empty()) {
-        float center_y = height * 0.45f;
-        ImGui::SetCursorPos({text_x, center_y});
+        ImGui::SetCursorPos({pad + 8.0f, height * 0.45f});
         ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
-        ImGui::TextUnformatted("no messages. type something below.");
+        ImGui::TextUnformatted("-- no messages --");
         ImGui::PopStyleColor();
     }
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    std::string last_nick;
 
     for (size_t mi = 0; mi < messages_.size(); mi++) {
         auto& msg = messages_[mi];
-        // file_share and thread_broadcast are real messages with content,
-        // not system noise like channel_join or channel_purpose
+        float msg_start_y = ImGui::GetCursorScreenPos().y;
+
         bool is_system = !msg.subtype.empty() && msg.subtype != "bot_message" &&
                          msg.subtype != "me_message" && msg.subtype != "file_share" &&
                          msg.subtype != "thread_broadcast";
 
-        // track Y position for click detection and selection highlight
-        float msg_start_y = ImGui::GetCursorScreenPos().y;
+        if (is_system) {
+            // system messages: "HH:MM -- nick has joined the channel"
+            ImGui::SetCursorPosX(pad);
+            ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
+            std::string line = msg.timestamp + " -- ";
+            if (!msg.nick.empty()) line += msg.nick + " ";
+            line += msg.text;
+            ImGui::TextUnformatted(line.c_str());
+            ImGui::PopStyleColor();
+            continue;
+        }
 
-        // timestamp
+        // IRC format: "HH:MM <nick> message"
         ImGui::SetCursorPosX(pad);
+
+        // timestamp in dim
         ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
         ImGui::TextUnformatted(msg.timestamp.c_str());
         ImGui::PopStyleColor();
         ImGui::SameLine(0, 0);
 
-        if (is_system) {
-            ImGui::SetCursorPosX(pad + ts_width + 4.0f);
-            ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
-            std::string sys = msg.nick.empty() ? msg.text : msg.nick + " " + msg.text;
-            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + text_avail + nick_width);
-            ImGui::TextUnformatted(sys.c_str());
-            ImGui::PopTextWrapPos();
-            ImGui::PopStyleColor();
-            continue;
-        }
-
-        // nick (collapsed for consecutive messages from same person)
-        bool show_nick = (msg.nick != last_nick);
-        last_nick = msg.nick;
-
-        if (show_nick) {
-            ImVec4 nick_color = theme.nickColor(msg.user_id);
-            float name_w = ImGui::CalcTextSize(msg.nick.c_str()).x;
-            float nick_x = pad + ts_width + nick_width - name_w;
-            ImGui::SetCursorPosX(nick_x);
-            ImGui::PushStyleColor(ImGuiCol_Text, nick_color);
-            ImGui::TextUnformatted(msg.nick.c_str());
-            ImGui::PopStyleColor();
-        } else {
-            ImGui::SetCursorPosX(pad + ts_width + nick_width);
-            ImGui::TextUnformatted("");
-        }
+        // " <nick> " with the nick colored
+        ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
+        ImGui::TextUnformatted(" <");
+        ImGui::PopStyleColor();
         ImGui::SameLine(0, 0);
 
-        // message text
-        ImGui::SetCursorPosX(text_x);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme.nickColor(msg.user_id));
+        ImGui::TextUnformatted(msg.nick.c_str());
+        ImGui::PopStyleColor();
+        ImGui::SameLine(0, 0);
+
+        ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
+        ImGui::TextUnformatted("> ");
+        ImGui::PopStyleColor();
+        ImGui::SameLine(0, 0);
+
+        // message text with mrkdwn
+        float text_start = ImGui::GetCursorPosX();
+        float text_avail = width - text_start - pad;
         auto spans = render::parseMrkdwn(msg.text);
         if (!spans.empty()) {
             render::renderSpans(spans, text_avail, theme.text_default);
+        } else if (msg.files.empty()) {
+            ImGui::NewLine();
         }
 
-        // edited indicator
+        // edited marker
         if (msg.is_edited) {
-            ImGui::SetCursorPosX(text_x);
+            ImGui::SetCursorPosX(text_start);
             ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
             ImGui::TextUnformatted("(edited)");
             ImGui::PopStyleColor();
         }
 
-        // file attachments
+        // files
         for (auto& f : msg.files) {
-            ImGui::SetCursorPosX(text_x);
+            ImGui::SetCursorPosX(text_start);
             bool is_image = (f.mimetype.find("image/") == 0);
             bool is_gif = (f.mimetype == "image/gif");
 
@@ -121,7 +116,7 @@ void BufferView::render(float x, float y, float width, float height, const Theme
                 float max_w = image_renderer_ ? image_renderer_->maxWidth() : 360.0f;
                 float max_h = image_renderer_ ? image_renderer_->maxHeight() : 240.0f;
                 if (gif_renderer_ && !gif_url.empty() && gif_renderer_->renderInline(gif_url, max_w, max_h)) {
-                    continue; // gifs just play inline, no popup needed
+                    continue;
                 }
             } else if (is_image) {
                 std::string img_url = f.thumb_360.empty() ? f.url_private : f.thumb_360;
@@ -135,11 +130,10 @@ void BufferView::render(float x, float y, float width, float height, const Theme
                     continue;
                 }
 
-                // fallback placeholder box while loading
+                // placeholder while loading
                 float img_w = (f.original_w > 0) ? std::min((float)f.original_w, 320.0f) : 200.0f;
                 float img_h = (f.original_h > 0 && f.original_w > 0)
-                    ? img_w * ((float)f.original_h / (float)f.original_w)
-                    : 150.0f;
+                    ? img_w * ((float)f.original_h / (float)f.original_w) : 150.0f;
                 img_h = std::min(img_h, 240.0f);
 
                 ImVec2 cursor = ImGui::GetCursorScreenPos();
@@ -147,34 +141,32 @@ void BufferView::render(float x, float y, float width, float height, const Theme
                                   ImGui::ColorConvertFloat4ToU32(theme.code_bg));
                 dl->AddRect(cursor, {cursor.x + img_w, cursor.y + img_h},
                             ImGui::ColorConvertFloat4ToU32(theme.separator_line));
-
                 std::string label = "[loading: " + f.name + "]";
                 ImVec2 label_size = ImGui::CalcTextSize(label.c_str());
                 dl->AddText({cursor.x + (img_w - label_size.x) * 0.5f,
                              cursor.y + (img_h - label_size.y) * 0.5f},
                             ImGui::ColorConvertFloat4ToU32(theme.text_dim), label.c_str());
-                ImGui::Dummy({img_w, img_h + 4.0f});
+                ImGui::Dummy({img_w, img_h + 2.0f});
             } else {
                 ImGui::PushStyleColor(ImGuiCol_Text, theme.url_color);
-                std::string label = "\xf0\x9f\x93\x8e " + f.name;
-                ImGui::TextUnformatted(label.c_str());
+                ImGui::TextUnformatted(("[" + f.name + "]").c_str());
                 ImGui::PopStyleColor();
             }
         }
 
-        // thread reply count
+        // thread replies
         if (msg.reply_count > 0) {
-            ImGui::SetCursorPosX(text_x);
-            ImGui::PushStyleColor(ImGuiCol_Text, theme.url_color);
-            std::string thr = std::to_string(msg.reply_count) +
-                               (msg.reply_count == 1 ? " reply" : " replies");
+            ImGui::SetCursorPosX(text_start);
+            ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
+            std::string thr = "[" + std::to_string(msg.reply_count) +
+                               (msg.reply_count == 1 ? " reply]" : " replies]");
             ImGui::TextUnformatted(thr.c_str());
             ImGui::PopStyleColor();
         }
 
-        // reactions - click a badge to toggle your own reaction
+        // reactions
         if (!msg.reactions.empty()) {
-            ImGui::SetCursorPosX(text_x);
+            ImGui::SetCursorPosX(text_start);
             auto click = render::ReactionBadge::render(msg.reactions, theme, text_avail);
             if (click.clicked) {
                 last_reaction_click_ = {true, click.emoji_name, msg.ts};
@@ -183,7 +175,7 @@ void BufferView::render(float x, float y, float width, float height, const Theme
 
         float msg_end_y = ImGui::GetCursorScreenPos().y;
 
-        // click to select this message (for reactions, edit, delete, thread)
+        // click to select
         ImVec2 win_pos = ImGui::GetWindowPos();
         if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
             ImVec2 mouse = ImGui::GetMousePos();
@@ -199,10 +191,8 @@ void BufferView::render(float x, float y, float width, float height, const Theme
                 {win_pos.x, msg_start_y},
                 {win_pos.x + width, msg_end_y},
                 ImGui::ColorConvertFloat4ToU32(
-                    {theme.bg_selected.x, theme.bg_selected.y, theme.bg_selected.z, 0.35f}));
+                    {theme.bg_selected.x, theme.bg_selected.y, theme.bg_selected.z, 0.3f}));
         }
-
-        ImGui::Dummy({0, 1.0f});
     }
 
     // auto-scroll
