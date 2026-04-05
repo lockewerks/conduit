@@ -99,9 +99,8 @@ private:
     // desktop notifications for mentions and DMs
     notify::NotificationManager notifications_;
 
-    // token prompt state (for first-run)
-    bool awaiting_token_ = false;
-    std::string token_prompt_field_;
+    // OAuth flow state
+    bool oauth_in_progress_ = false;
 };
 
 } // namespace conduit

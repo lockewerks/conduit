@@ -1,6 +1,6 @@
 #include "app/Application.h"
 #include "app/KeychainStore.h"
-#include "app/SlackTokenFinder.h"
+#include "app/OAuthFlow.h"
 #include "util/Logger.h"
 #include "util/Platform.h"
 #include "util/TimeFormat.h"
@@ -242,80 +242,123 @@ void Application::loadConfig() {
 
 void Application::connectToSlack() {
     auto& orgs = config_.get().orgs;
-    if (orgs.empty()) {
-        LOG_WARN("no orgs configured - add one to " + Config::defaultPath());
-        ui_.statusBar().setConnectionState("no org configured");
-        ui_.statusBar().setOrgName("Conduit");
-        // we'll still show the placeholder UI, just no real data
-        return;
+
+    // check keychain for a previously saved token
+    std::string user_token;
+    std::string app_token;
+    std::string org_name = "Slack";
+
+    if (!orgs.empty()) {
+        auto& org = orgs[0];
+        org_name = org.name;
+        user_token = org.user_token;
+        app_token = org.app_token;
     }
 
-    auto& org = orgs[0]; // first org for now
-
-    // try to get tokens from keychain first
-    std::string user_token = org.user_token;
-    std::string app_token = org.app_token;
-
+    // try the keychain if no token in config
     if (user_token.empty()) {
-        auto stored = KeychainStore::retrieve("conduit", org.name + "/user_token");
-        if (stored) user_token = *stored;
-    }
-    if (app_token.empty()) {
-        auto stored = KeychainStore::retrieve("conduit", org.name + "/app_token");
-        if (stored) app_token = *stored;
-    }
-
-    // no token? let's see if Slack desktop is installed and steal one
-    if (user_token.empty()) {
-        auto tokens = SlackTokenFinder::findTokens();
-        if (!tokens.empty()) {
-            user_token = tokens[0].xoxc_token;
-            // xoxc tokens need the session cookie on every request or slack
-            // throws a fit. stash it so WebAPI can send it along.
-            org.d_cookie = tokens[0].d_cookie;
-            LOG_INFO("snagged a token from Slack desktop" +
-                     (tokens[0].team_name.empty() ? "" : " (" + tokens[0].team_name + ")"));
+        auto stored = KeychainStore::retrieve("conduit", "user_token");
+        if (stored) {
+            user_token = *stored;
+            LOG_INFO("loaded token from keychain");
         }
     }
 
+    // no token anywhere? fire up OAuth.
+    // opens the browser to Slack's authorize page, catches the callback
+    // on localhost, exchanges the code for a proper xoxp- user token.
+    // just like the electron app does it. zero manual configuration.
     if (user_token.empty()) {
-        LOG_WARN("no user token for " + org.name + " - need to configure tokens");
-        ui_.statusBar().setConnectionState("needs token");
-        awaiting_token_ = true;
-        token_prompt_field_ = "user_token";
+        LOG_INFO("no token found, starting OAuth flow...");
+        ui_.statusBar().setConnectionState("sign in via browser...");
+        ui_.statusBar().setOrgName("Conduit");
+        oauth_in_progress_ = true;
+
+        pool_->enqueue([this]() {
+            // your app credentials from api.slack.com
+            OAuthFlow oauth(
+                "REDACTED_CLIENT_ID",
+                "REDACTED_CLIENT_SECRET"
+            );
+
+            auto result = oauth.execute();
+            oauth_in_progress_ = false;
+
+            if (result.ok && !result.access_token.empty()) {
+                // save the token to keychain so we don't have to do this again
+                KeychainStore::store("conduit", "user_token", result.access_token);
+
+                // create an org config from the OAuth result
+                OrgConfig org;
+                org.name = result.team_name.empty() ? "Slack" : result.team_name;
+                org.user_token = result.access_token;
+                org.auto_connect = true;
+                config_.get().orgs.push_back(org);
+
+                // save a minimal config file so the org persists
+                config_.save(Config::defaultPath());
+
+                LOG_INFO("OAuth complete, connecting to " + org.name);
+
+                // now actually connect (on the main thread's next cycle)
+                // we can't call connectToSlack recursively from a worker thread,
+                // so set a flag and let the main loop handle it
+                needs_channel_sync_ = true;
+
+                // do the actual connection right here since we're already on a thread
+                std::string data_dir = platform::getDataDir();
+                platform::ensureDir(data_dir);
+                db_ = std::make_unique<cache::Database>();
+                db_->open(data_dir + "/" + org.name + ".db");
+                msg_cache_ = std::make_unique<cache::MessageCache>(*db_);
+
+                ui_.bufferView().setImageRenderer(&image_renderer_);
+                ui_.bufferView().setGifRenderer(&gif_renderer_);
+                ui_.bufferView().setAuthToken(result.access_token);
+
+                client_ = std::make_unique<slack::SlackClient>(org, *db_);
+                if (client_->connect()) {
+                    needs_channel_sync_ = true;
+                    LOG_INFO("connected to " + org.name);
+                }
+            } else {
+                LOG_ERROR("OAuth failed: " + result.error);
+                ui_.statusBar().setConnectionState("auth failed");
+            }
+        });
         return;
     }
 
-    // set up the database for this org
+    // we have a token (from config, keychain, or a previous OAuth).
+    // set up database and connect.
     std::string data_dir = platform::getDataDir();
     platform::ensureDir(data_dir);
     db_ = std::make_unique<cache::Database>();
-    db_->open(data_dir + "/" + org.name + ".db");
+    db_->open(data_dir + "/" + org_name + ".db");
 
     msg_cache_ = std::make_unique<cache::MessageCache>(*db_);
 
-    // build the org config with resolved tokens
-    OrgConfig resolved = org;
+    OrgConfig resolved;
+    resolved.name = org_name;
     resolved.user_token = user_token;
     resolved.app_token = app_token;
+    if (!orgs.empty()) resolved.d_cookie = orgs[0].d_cookie;
 
     client_ = std::make_unique<slack::SlackClient>(resolved, *db_);
 
-    // wire up renderers so BufferView can actually show pictures and dancing GIFs
     ui_.bufferView().setImageRenderer(&image_renderer_);
     ui_.bufferView().setGifRenderer(&gif_renderer_);
     ui_.bufferView().setAuthToken(user_token);
 
-    ui_.statusBar().setOrgName(org.name);
+    ui_.statusBar().setOrgName(org_name);
     ui_.statusBar().setConnectionState("connecting...");
 
-    // connect in the background so we don't block the UI
-    pool_->enqueue([this, org_name = org.name]() {
+    pool_->enqueue([this, name = org_name]() {
         if (client_->connect()) {
             needs_channel_sync_ = true;
-            LOG_INFO("connected to " + org_name);
+            LOG_INFO("connected to " + name);
         } else {
-            LOG_ERROR("failed to connect to " + org_name);
+            LOG_ERROR("failed to connect to " + name);
         }
     });
 }
@@ -1280,23 +1323,6 @@ void Application::handleInputSubmit(const std::string& text) {
     // it's a regular message
     if (!client_ || active_channel_.empty()) {
         LOG_WARN("not connected to any channel");
-        return;
-    }
-
-    // check if we're in token prompt mode
-    if (awaiting_token_) {
-        // store the token
-        auto& org = config_.get().orgs[0];
-        if (token_prompt_field_ == "user_token") {
-            KeychainStore::store("conduit", org.name + "/user_token", text);
-            LOG_INFO("user token stored");
-            token_prompt_field_ = "app_token";
-        } else if (token_prompt_field_ == "app_token") {
-            KeychainStore::store("conduit", org.name + "/app_token", text);
-            LOG_INFO("app token stored, connecting...");
-            awaiting_token_ = false;
-            connectToSlack();
-        }
         return;
     }
 
