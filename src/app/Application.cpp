@@ -1025,17 +1025,7 @@ void Application::run() {
 void Application::processInput() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
-        // intercept ctrl+v BEFORE imgui gets it, so we can check for
-        // clipboard images. if there's a bitmap, we handle it ourselves.
-        // if not, imgui gets the event and does normal text paste.
-        if (event.type == SDL_KEYDOWN &&
-            event.key.keysym.sym == SDLK_v &&
-            (event.key.keysym.mod & KMOD_CTRL)) {
-            if (tryPasteClipboardImage()) {
-                continue; // ate the event, don't pass to imgui
-            }
-        }
-
+        // always let imgui process events first - don't break text input
         ImGui_ImplSDL2_ProcessEvent(&event);
 
         switch (event.type) {
@@ -1050,7 +1040,6 @@ void Application::processInput() {
             handleKeyDown(event.key);
             break;
         case SDL_DROPFILE: {
-            // someone dragged a file onto our window, how kind of them
             char* file = event.drop.file;
             if (file && client_ && !active_channel_.empty()) {
                 std::string path(file);
@@ -1066,14 +1055,16 @@ void Application::processInput() {
 }
 
 void Application::handleKeyDown(const SDL_KeyboardEvent& key) {
-    // ctrl+v: check for clipboard image before letting imgui handle text paste.
-    // text paste still works fine - we only intercept when there's a bitmap.
-    // ctrl+v is handled in processInput() before imgui gets it
-    // so we don't need to check here
+    // ctrl+v: try to paste an image from clipboard.
+    // we do this AFTER imgui processes the event so text paste still works.
+    // if the clipboard has a bitmap (and no text), we upload it as an image.
+    if (key.keysym.sym == SDLK_v && (key.keysym.mod & KMOD_CTRL)) {
+        tryPasteClipboardImage();
+        // don't return - let imgui handle text paste too if there is text
+    }
 
-    // let the keybinding system try first
+    // let the keybinding system try
     if (keys_.handleKeyDown(key)) return;
-    // imgui handles the rest (input bar typing, etc)
 }
 
 bool Application::tryPasteClipboardImage() {

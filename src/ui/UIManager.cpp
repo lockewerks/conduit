@@ -1,5 +1,6 @@
 #include "ui/UIManager.h"
 #include <imgui.h>
+#include <SDL.h>
 #include <algorithm>
 
 namespace conduit::ui {
@@ -200,35 +201,25 @@ void UIManager::render() {
     }
 
     // ---- right-click context menu ----
-    // available everywhere in the window, standard cut/copy/paste stuff
     wants_paste_image_ = false;
     if (ImGui::BeginPopupContextWindow("##context_menu", ImGuiPopupFlags_MouseButtonRight)) {
-        if (ImGui::MenuItem("Cut", "Ctrl+X")) {
-            // imgui handles cut in input widgets natively, but this gives
-            // the user something to click if they're feeling mousey
-            ImGuiIO& io = ImGui::GetIO();
-            io.AddKeyEvent(ImGuiKey_X, true);
-            io.AddKeyEvent(ImGuiMod_Ctrl, true);
-        }
         if (ImGui::MenuItem("Copy", "Ctrl+C")) {
-            ImGuiIO& io = ImGui::GetIO();
-            io.AddKeyEvent(ImGuiKey_C, true);
-            io.AddKeyEvent(ImGuiMod_Ctrl, true);
+            // grab whatever text is selected in the active imgui widget
+            // (imgui's internal clipboard handles the actual copy)
+            const char* selected = ImGui::GetClipboardText();
+            if (selected && selected[0]) {
+                SDL_SetClipboardText(selected);
+            }
         }
         if (ImGui::MenuItem("Paste", "Ctrl+V")) {
-            ImGuiIO& io = ImGui::GetIO();
-            io.AddKeyEvent(ImGuiKey_V, true);
-            io.AddKeyEvent(ImGuiMod_Ctrl, true);
+            // shove the clipboard text into imgui's input buffer
+            const char* clip = SDL_GetClipboardText();
+            if (clip && clip[0]) {
+                ImGui::GetIO().AddInputCharactersUTF8(clip);
+            }
         }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Paste Image", "Ctrl+V")) {
+        if (ImGui::MenuItem("Paste Image")) {
             wants_paste_image_ = true;
-        }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Select All", "Ctrl+A")) {
-            ImGuiIO& io = ImGui::GetIO();
-            io.AddKeyEvent(ImGuiKey_A, true);
-            io.AddKeyEvent(ImGuiMod_Ctrl, true);
         }
         ImGui::EndPopup();
     }
