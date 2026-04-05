@@ -89,12 +89,23 @@ bool Application::initSDL() {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
-    // tell windows we handle DPI ourselves so it doesn't bitmap-scale us
+    // tell windows we handle DPI ourselves
 #ifdef _WIN32
     SetProcessDPIAware();
+
+    // detect the OS display scale factor (125%, 150%, etc)
+    // this becomes our default ui_scale_ so text isn't microscopic
+    HDC hdc = GetDC(NULL);
+    if (hdc) {
+        int dpi = GetDeviceCaps(hdc, LOGPIXELSX);
+        ui_scale_ = (float)dpi / 96.0f; // 96 DPI = 100% scaling
+        ReleaseDC(NULL, hdc);
+        LOG_INFO("display DPI: " + std::to_string(dpi) + " -> scale: " +
+                 std::to_string(ui_scale_));
+    }
 #endif
 
-    // size the window to 75% of the screen so it fits on any display
+    // size the window to 75% of the screen
     SDL_DisplayMode dm;
     int start_w = 1024, start_h = 700;
     if (SDL_GetDesktopDisplayMode(0, &dm) == 0) {
@@ -151,59 +162,11 @@ bool Application::initImGui() {
 }
 
 void Application::loadFonts() {
-    ImGuiIO& io = ImGui::GetIO();
-    std::string exe_dir = getExeDir();
-
-    std::vector<std::string> search_paths = {
-        exe_dir + "/assets/fonts/JetBrainsMono-Regular.ttf",
-        exe_dir + "/../assets/fonts/JetBrainsMono-Regular.ttf",
-        "assets/fonts/JetBrainsMono-Regular.ttf",
-        "../assets/fonts/JetBrainsMono-Regular.ttf",
-    };
-
-    bool loaded_primary = false;
-    for (auto& path : search_paths) {
-        if (std::filesystem::exists(path)) {
-            io.Fonts->AddFontFromFileTTF(path.c_str(), 14.0f);
-            LOG_INFO("loaded JetBrains Mono from " + path);
-            loaded_primary = true;
-            break;
-        }
-    }
-    if (!loaded_primary) {
-        LOG_WARN("couldn't find JetBrains Mono, using imgui default");
-    }
-
-    // merge an emoji-capable font as fallback so unicode emoji just render
-    // instead of showing up as tofu rectangles. each platform ships one.
-    ImFontConfig emoji_cfg;
-    emoji_cfg.MergeMode = true;
-    emoji_cfg.OversampleH = 1;
-    emoji_cfg.OversampleV = 1;
-
-    // the ranges we care about: misc symbols, dingbats, emoticons, the works
-    static const ImWchar emoji_ranges[] = {
-        0x2600, 0x27BF,   // misc symbols, dingbats
-        0x2B50, 0x2B55,   // stars, circles
-        0xFE00, 0xFE0F,   // variation selectors
-        0x1F300, 0x1F9FF,  // emoticons, symbols, flags, etc
-        0,
-    };
-
-#ifdef _WIN32
-    std::string emoji_font = "C:\\Windows\\Fonts\\seguiemj.ttf";
-#elif defined(__APPLE__)
-    std::string emoji_font = "/System/Library/Fonts/Apple Color Emoji.ttc";
-#else
-    std::string emoji_font = "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf";
-#endif
-
-    if (std::filesystem::exists(emoji_font)) {
-        io.Fonts->AddFontFromFileTTF(emoji_font.c_str(), 14.0f, &emoji_cfg, emoji_ranges);
-        LOG_INFO("emoji font loaded from " + emoji_font);
-    } else {
-        LOG_WARN("no emoji font found at " + emoji_font + " - emoji will render as :text:");
-    }
+    // use ui_scale_ for initial font size so text matches the OS DPI setting
+    float font_size = 14.0f * ui_scale_;
+    rebuildFonts();
+    LOG_INFO("initial font size: " + std::to_string(font_size) + "px (scale " +
+             std::to_string(ui_scale_) + ")");
 }
 
 // ---- Config & Slack connection ----
@@ -1061,8 +1024,14 @@ void Application::rebuildFonts() {
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->Clear();
 
-    float font_size = 14.0f * ui_scale_;
+    float font_size = std::round(14.0f * ui_scale_); // round to whole pixels for crispness
     std::string exe_dir = getExeDir();
+
+    // primary font: pixel-perfect, no blurry oversampling
+    ImFontConfig font_cfg;
+    font_cfg.OversampleH = 1; // no horizontal oversampling = sharp text
+    font_cfg.OversampleV = 1;
+    font_cfg.PixelSnapH = true; // snap glyphs to pixel grid
 
     std::vector<std::string> search_paths = {
         exe_dir + "/assets/fonts/JetBrainsMono-Regular.ttf",
@@ -1073,40 +1042,44 @@ void Application::rebuildFonts() {
     bool loaded = false;
     for (auto& path : search_paths) {
         if (std::filesystem::exists(path)) {
-            io.Fonts->AddFontFromFileTTF(path.c_str(), font_size);
+            io.Fonts->AddFontFromFileTTF(path.c_str(), font_size, &font_cfg);
             loaded = true;
             break;
         }
     }
     if (!loaded) {
-        // imgui default font, scaled
-        ImFontConfig cfg;
-        cfg.SizePixels = font_size;
-        io.Fonts->AddFontDefault(&cfg);
+        font_cfg.SizePixels = font_size;
+        io.Fonts->AddFontDefault(&font_cfg);
     }
 
-    // merge emoji font
+    // emoji fallback font
     ImFontConfig emoji_cfg;
     emoji_cfg.MergeMode = true;
     emoji_cfg.OversampleH = 1;
     emoji_cfg.OversampleV = 1;
+    emoji_cfg.PixelSnapH = true;
     static const ImWchar emoji_ranges[] = {
         0x2600, 0x27BF, 0x2B50, 0x2B55, 0xFE00, 0xFE0F,
         0x1F300, 0x1F9FF, 0,
     };
+#ifdef _WIN32
     std::string emoji_font = "C:\\Windows\\Fonts\\seguiemj.ttf";
+#else
+    std::string emoji_font = "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf";
+#endif
     if (std::filesystem::exists(emoji_font)) {
         io.Fonts->AddFontFromFileTTF(emoji_font.c_str(), font_size, &emoji_cfg, emoji_ranges);
     }
 
     io.Fonts->Build();
-    // recreate the font texture on the GPU
     ImGui_ImplOpenGL3_DestroyDeviceObjects();
     ImGui_ImplOpenGL3_CreateDeviceObjects();
 
-    // scale imgui's style to match
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.ScaleAllSizes(ui_scale_);
+    // reset style to defaults, THEN apply our theme, THEN scale.
+    // ScaleAllSizes is cumulative so we have to start from scratch each time.
+    ImGui::GetStyle() = ImGuiStyle(); // reset to imgui defaults
+    ui_.theme().apply();              // apply our weechat theme
+    ImGui::GetStyle().ScaleAllSizes(ui_scale_); // scale everything
 
     LOG_INFO("UI scale: " + std::to_string(ui_scale_) + " font: " + std::to_string(font_size) + "px");
 }
