@@ -183,7 +183,34 @@ std::vector<Message> SlackClient::getHistory(const ChannelId& channel, int limit
     if (result->contains("messages") && (*result)["messages"].is_array()) {
         for (auto& m : (*result)["messages"]) {
             try {
-                messages.push_back(m.get<Message>());
+                auto msg = m.get<Message>();
+                // log file info so we can debug image rendering
+                if (!msg.files.empty()) {
+                    LOG_DEBUG("msg has " + std::to_string(msg.files.size()) +
+                              " files: " + msg.files[0].name + " (" + msg.files[0].mimetype + ")");
+                }
+                if (m.contains("attachments") && m["attachments"].is_array() && !m["attachments"].empty()) {
+                    auto& att = m["attachments"][0];
+                    std::string att_type = att.value("service_name", att.value("fallback", "unknown"));
+                    LOG_DEBUG("msg has attachment: " + att_type);
+                    // slack sends giphy/unfurled images as attachments, not files
+                    // pull them into the files array so our renderer sees them
+                    for (auto& a : m["attachments"]) {
+                        std::string img_url = a.value("image_url", "");
+                        if (!img_url.empty()) {
+                            SlackFile sf;
+                            sf.name = a.value("title", a.value("fallback", "image"));
+                            sf.url_private = img_url;
+                            sf.thumb_360 = a.value("thumb_url", img_url);
+                            sf.mimetype = "image/gif"; // attachments with image_url are usually gifs
+                            sf.original_w = a.value("image_width", 0);
+                            sf.original_h = a.value("image_height", 0);
+                            msg.files.push_back(sf);
+                            LOG_DEBUG("promoted attachment image to file: " + img_url.substr(0, 80));
+                        }
+                    }
+                }
+                messages.push_back(std::move(msg));
             } catch (...) {}
         }
     }

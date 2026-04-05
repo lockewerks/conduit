@@ -18,6 +18,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include "stb_image_write.h"
 
 #ifdef _WIN32
 #include "stb_image_write.h"
@@ -1367,13 +1368,17 @@ void Application::syncBufferList() {
 void Application::syncBufferView() {
     if (!client_ || active_channel_.empty()) return;
 
-    // load from cache first, fetch from API if empty
+    // always fetch fresh from the API so we get file/attachment data
+    // the cache is good for offline fallback but attachments need the
+    // promotion logic in getHistory to turn slack's weird attachment
+    // format into something our renderer understands
+    auto history = client_->getHistory(active_channel_, 100);
+    if (!history.empty()) {
+        msg_cache_->store(active_channel_, history);
+    }
     auto messages = msg_cache_->get(active_channel_, 200);
     if (messages.empty()) {
-        // fetch from slack
-        auto history = client_->getHistory(active_channel_, 100);
-        msg_cache_->store(active_channel_, history);
-        messages = history;
+        messages = history; // fallback if cache is somehow empty
     }
 
     // convert to the format BufferView wants
@@ -1393,6 +1398,10 @@ void Application::syncBufferView() {
         vm.ts = msg.ts;
 
         // queue image/gif downloads so they're ready by the time we render
+        if (!msg.files.empty()) {
+            LOG_DEBUG("msg has " + std::to_string(msg.files.size()) + " files, first: " +
+                      msg.files[0].name + " (" + msg.files[0].mimetype + ")");
+        }
         for (auto& f : msg.files) {
             if (f.mimetype.find("image/") == 0) {
                 std::string img_url = f.thumb_360.empty() ? f.url_private : f.thumb_360;

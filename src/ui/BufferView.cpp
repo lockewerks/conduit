@@ -50,8 +50,11 @@ void BufferView::render(float x, float y, float width, float height, const Theme
 
     for (size_t mi = 0; mi < messages_.size(); mi++) {
         auto& msg = messages_[mi];
+        // file_share and thread_broadcast are real messages with content,
+        // not system noise like channel_join or channel_purpose
         bool is_system = !msg.subtype.empty() && msg.subtype != "bot_message" &&
-                         msg.subtype != "me_message";
+                         msg.subtype != "me_message" && msg.subtype != "file_share" &&
+                         msg.subtype != "thread_broadcast";
 
         // track Y position for click detection and selection highlight
         float msg_start_y = ImGui::GetCursorScreenPos().y;
