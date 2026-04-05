@@ -48,6 +48,23 @@ ReactionBadge::ClickResult ReactionBadge::render(
             result.emoji_name = r.emoji_name;
         }
 
+        // hover glow - brighten the badge so it feels alive
+        if (ImGui::IsItemHovered()) {
+            ImVec4 glow = bg;
+            glow.x = std::min(glow.x + 0.08f, 1.0f);
+            glow.y = std::min(glow.y + 0.08f, 1.0f);
+            glow.z = std::min(glow.z + 0.10f, 1.0f);
+            ImGui::GetWindowDrawList()->AddRectFilled(
+                pos, {pos.x + badge_w, pos.y + badge_h},
+                ImGui::ColorConvertFloat4ToU32(glow), 3.0f);
+            // redraw text on top of the glow so it doesn't get buried
+            ImGui::GetWindowDrawList()->AddText(
+                {pos.x + 6, pos.y + 1},
+                ImGui::ColorConvertFloat4ToU32(theme.reaction_count),
+                label.c_str());
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        }
+
         ImGui::SameLine(0, 4);
         x += badge_w + 4;
     }

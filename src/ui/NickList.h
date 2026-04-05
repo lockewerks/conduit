@@ -17,8 +17,13 @@ public:
     void render(float x, float y, float width, float height, const Theme& theme);
     void setNicks(const std::vector<NickEntry>& nicks) { nicks_ = nicks; }
 
+    // right-click on a nick - parent can check and open a DM or whatever
+    const std::string& lastClickedNick() const { return clicked_nick_; }
+    void clearClickedNick() { clicked_nick_.clear(); }
+
 private:
     std::vector<NickEntry> nicks_;
+    std::string clicked_nick_;
 };
 
 } // namespace conduit::ui

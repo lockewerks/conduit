@@ -91,6 +91,15 @@ float InputBar::render(float x, float y, float width, float max_height, const Th
         }
     }
 
+    // ghost text when input is empty — gentle nudge for the clueless
+    if (input_buf_[0] == '\0' && !ImGui::IsItemActive()) {
+        ImVec2 input_pos = ImGui::GetItemRectMin();
+        ImGui::GetWindowDrawList()->AddText(
+            {input_pos.x + 4, input_pos.y + 2},
+            ImGui::ColorConvertFloat4ToU32({theme.text_dim.x, theme.text_dim.y, theme.text_dim.z, 0.4f}),
+            "Type a message or /command...");
+    }
+
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(2);
     ImGui::PopItemWidth();

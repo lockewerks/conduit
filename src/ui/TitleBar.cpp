@@ -35,10 +35,20 @@ void TitleBar::render(float x, float y, float width, float height, const Theme& 
         // clip topic to remaining space
         float remaining = width - ImGui::GetCursorPosX() - 4.0f;
         if (remaining > 30.0f) {
+            float topic_w = ImGui::CalcTextSize(topic_.c_str()).x;
             ImVec2 clip_min = ImGui::GetCursorScreenPos();
             ImGui::PushClipRect(clip_min, {clip_min.x + remaining, clip_min.y + height}, true);
             ImGui::TextUnformatted(topic_.c_str());
             ImGui::PopClipRect();
+
+            // tooltip for the full topic when it gets clipped off into the void
+            if (topic_w > remaining) {
+                ImVec2 bar_min = {p.x, p.y};
+                ImVec2 bar_max = {p.x + width, p.y + height};
+                if (ImGui::IsMouseHoveringRect(bar_min, bar_max)) {
+                    ImGui::SetTooltip("%s", topic_.c_str());
+                }
+            }
         }
         ImGui::PopStyleColor();
     }

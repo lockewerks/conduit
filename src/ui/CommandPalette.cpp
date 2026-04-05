@@ -76,13 +76,14 @@ void CommandPalette::render(float x, float y, float width, float height, const T
                                ImGui::ColorConvertFloat4ToU32(theme.bg_selected));
         }
 
-        ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
-        ImGui::TextUnformatted(entry.category.c_str());
-        ImGui::PopStyleColor();
-        ImGui::SameLine();
-
         ImGui::PushStyleColor(ImGuiCol_Text, is_selected ? theme.text_bright : theme.text_default);
         ImGui::TextUnformatted(entry.display.c_str());
+        ImGui::PopStyleColor();
+
+        // right-aligned category hint so you know what you're looking at
+        ImGui::SameLine(palette_w - ImGui::CalcTextSize(entry.category.c_str()).x - 20.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, {theme.text_dim.x, theme.text_dim.y, theme.text_dim.z, 0.5f});
+        ImGui::TextUnformatted(entry.category.c_str());
         ImGui::PopStyleColor();
     }
 

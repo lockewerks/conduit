@@ -29,9 +29,14 @@ public:
     void setEntries(const std::vector<BufferEntry>& entries);
     const std::vector<BufferEntry>& entries() const { return entries_; }
 
+    // right-click context menu feedback - "leave channel", "mark as read", etc.
+    const std::string& rightClickedChannel() const { return right_clicked_channel_; }
+    void clearRightClick() { right_clicked_channel_.clear(); }
+
 private:
     std::vector<BufferEntry> entries_;
     int selected_ = 0;
+    std::string right_clicked_channel_;
 };
 
 } // namespace conduit::ui

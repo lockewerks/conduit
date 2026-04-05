@@ -58,6 +58,15 @@ public:
     ImageClick lastImageClick() const { return last_image_click_; }
     void clearImageClick() { last_image_click_ = {}; }
 
+    // right-click context menu action - whoever owns us should check this each frame
+    struct ContextAction {
+        enum Type { None, Copy, Reply, React, Edit, Delete } type = None;
+        std::string ts;
+        std::string text;
+    };
+    ContextAction lastContextAction() const { return last_context_action_; }
+    void clearContextAction() { last_context_action_ = {}; }
+
 private:
     std::vector<BufferViewMessage> messages_;
     bool auto_scroll_ = true;
@@ -70,6 +79,10 @@ private:
     std::string selected_ts_;
     ReactionClick last_reaction_click_;
     ImageClick last_image_click_;
+    ContextAction last_context_action_;
+    std::string context_msg_ts_;
+    std::string context_msg_user_;
+    std::string context_msg_text_;
 };
 
 } // namespace conduit::ui

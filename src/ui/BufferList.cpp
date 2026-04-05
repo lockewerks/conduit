@@ -91,6 +91,42 @@ void BufferList::render(float x, float y, float width, float height, const Theme
                                ImGuiSelectableFlags_None, {width - 4.0f, line_height})) {
             selected_ = i;
         }
+
+        // hover highlight - just a whisper of color so you know something's there
+        if (ImGui::IsItemHovered() && !is_selected) {
+            dl->AddRectFilled(
+                cursor_before,
+                {cursor_before.x + width, cursor_before.y + line_height},
+                ImGui::ColorConvertFloat4ToU32({0.06f, 0.06f, 0.08f, 0.6f}));
+        }
+
+        // right-click context menu
+        if (ImGui::IsItemClicked(1)) {
+            right_clicked_channel_ = entry.channel_id;
+            ImGui::OpenPopup(("##chan_ctx_" + std::to_string(i)).c_str());
+        }
+
+        // truncation tooltip - don't make people guess at long channel names
+        {
+            float right_margin = (entry.unread_count > 0) ? 40.0f : 8.0f;
+            float avail_w = width - 10.0f - right_margin; // 10.0f is the indent
+            float name_w = ImGui::CalcTextSize(entry.name.c_str()).x;
+            if (ImGui::IsItemHovered() && name_w > avail_w && avail_w > 0) {
+                ImGui::SetTooltip("%s", entry.name.c_str());
+            }
+        }
+
+        // channel context menu
+        if (ImGui::BeginPopup(("##chan_ctx_" + std::to_string(i)).c_str())) {
+            if (ImGui::MenuItem("Mark as read")) {
+                // placeholder - parent handles this via right_clicked_channel_
+            }
+            if (ImGui::MenuItem("Leave channel")) {
+                // same deal
+            }
+            ImGui::EndPopup();
+        }
+
         ImGui::SameLine(0, 0);
         ImGui::SetCursorPosX(10.0f); // indented under the org header
 

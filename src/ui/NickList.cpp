@@ -44,7 +44,40 @@ void NickList::render(float x, float y, float width, float height, const Theme& 
                 ImGui::ColorConvertFloat4ToU32(theme.separator_line));
     ImGui::Dummy({0, 4.0f});
 
-    for (const auto& nick : nicks_) {
+    float line_height = ImGui::GetTextLineHeightWithSpacing();
+
+    for (size_t ni = 0; ni < nicks_.size(); ni++) {
+        const auto& nick = nicks_[ni];
+
+        ImVec2 row_start = ImGui::GetCursorScreenPos();
+
+        // invisible selectable for hover/click detection - the backbone of interactivity
+        std::string sel_id = "##nick_" + std::to_string(ni);
+        ImGui::Selectable(sel_id.c_str(), false, ImGuiSelectableFlags_None,
+                          {width - 4.0f, line_height});
+
+        bool item_hovered = ImGui::IsItemHovered();
+        bool was_truncated = false;
+
+        // hover highlight
+        if (item_hovered) {
+            dl->AddRectFilled(
+                row_start,
+                {row_start.x + width, row_start.y + line_height},
+                ImGui::ColorConvertFloat4ToU32({0.06f, 0.06f, 0.08f, 0.6f}));
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        }
+
+        // right-click context menu
+        if (ImGui::IsItemClicked(1)) {
+            clicked_nick_ = nick.name;
+            ImGui::OpenPopup(("##nick_ctx_" + std::to_string(ni)).c_str());
+        }
+
+        // now draw the actual content on top of the selectable (same line)
+        ImGui::SameLine(0, 0);
+        ImGui::SetCursorScreenPos(row_start);
+
         // presence dot - filled circle for online, hollow for offline
         ImVec4 dot_color = nick.is_online
             ? ImVec4{0.30f, 0.85f, 0.40f, 1.0f}
@@ -52,11 +85,10 @@ void NickList::render(float x, float y, float width, float height, const Theme& 
 
         ImGui::SetCursorPosX(8.0f);
         ImGui::PushStyleColor(ImGuiCol_Text, dot_color);
-        // filled dot for online, hollow for offline
         if (nick.is_online) {
-            ImGui::TextUnformatted("\xe2\x97\x8f"); // "●"
+            ImGui::TextUnformatted("\xe2\x97\x8f"); // filled
         } else {
-            ImGui::TextUnformatted("\xe2\x97\x8b"); // "○"
+            ImGui::TextUnformatted("\xe2\x97\x8b"); // hollow
         }
         ImGui::PopStyleColor();
         ImGui::SameLine(0, 6.0f);
@@ -82,10 +114,27 @@ void NickList::render(float x, float y, float width, float height, const Theme& 
             }
             trunc += "..";
             ImGui::TextUnformatted(trunc.c_str());
+            was_truncated = true;
         } else {
             ImGui::TextUnformatted(display.c_str());
         }
         ImGui::PopStyleColor();
+
+        // tooltip for truncated names - don't leave people guessing
+        if (item_hovered && was_truncated) {
+            ImGui::SetTooltip("%s", display.c_str());
+        }
+
+        // nick context menu
+        if (ImGui::BeginPopup(("##nick_ctx_" + std::to_string(ni)).c_str())) {
+            if (ImGui::MenuItem("Open DM")) {
+                clicked_nick_ = nick.name;
+            }
+            if (ImGui::MenuItem("Copy username")) {
+                ImGui::SetClipboardText(nick.name.c_str());
+            }
+            ImGui::EndPopup();
+        }
 
         // a little breathing room between entries
         ImGui::Dummy({0, 1.0f});

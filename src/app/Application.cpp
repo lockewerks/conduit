@@ -1283,8 +1283,17 @@ void Application::handleInputSubmit(const std::string& text) {
             // socket mode will deliver the real message
         } else {
             LOG_ERROR("failed to send message");
-            msg_cache_->remove(channel, pts);
-            needs_message_sync_ = true;
+            // mark it as failed so the user knows what happened
+            auto msgs = msg_cache_->get(channel, 200);
+            for (auto& m : msgs) {
+                if (m.ts == pts) {
+                    m.subtype = "send_failed";
+                    m.text = "[FAILED] " + m.text;
+                    msg_cache_->update(channel, m);
+                    needs_message_sync_ = true;
+                    break;
+                }
+            }
         }
     });
 }
