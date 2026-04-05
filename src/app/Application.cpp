@@ -46,6 +46,8 @@ Application::~Application() {
 }
 
 bool Application::init() {
+    // write logs to a file since we're a WIN32 app with no console
+    Logger::instance().setFile("C:/Users/vexam/conduit_debug.log");
     LOG_INFO("conduit starting up...");
 
     if (!initSDL()) return false;
@@ -86,19 +88,33 @@ bool Application::initSDL() {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
-    // normal OS-decorated window. borderless was an unending nightmare of
-    // ghost windows, broken keyboard, fullscreen chaos. the OS can handle
-    // its own damn title bar.
+    // stupidly simple window creation. no highdpi flag, no centered,
+    // hardcoded position and size. if THIS starts fullscreen then SDL
+    // itself is the problem.
     window_ = SDL_CreateWindow(
         "Conduit",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        window_width_, window_height_,
-        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+        100, 100,
+        1280, 800,
+        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
 
     if (!window_) {
         LOG_ERROR(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
         return false;
     }
+
+    // log what we actually got so we can see if SDL is lying to us
+    int actual_w, actual_h, actual_x, actual_y;
+    SDL_GetWindowSize(window_, &actual_w, &actual_h);
+    SDL_GetWindowPosition(window_, &actual_x, &actual_y);
+    Uint32 actual_flags = SDL_GetWindowFlags(window_);
+    LOG_INFO("window created: " + std::to_string(actual_w) + "x" + std::to_string(actual_h) +
+             " at " + std::to_string(actual_x) + "," + std::to_string(actual_y) +
+             " flags=0x" + std::to_string(actual_flags));
+    if (actual_flags & SDL_WINDOW_FULLSCREEN) LOG_WARN("FULLSCREEN flag is set!");
+    if (actual_flags & SDL_WINDOW_FULLSCREEN_DESKTOP) LOG_WARN("FULLSCREEN_DESKTOP flag is set!");
+    if (actual_flags & SDL_WINDOW_BORDERLESS) LOG_WARN("BORDERLESS flag is set!");
+    if (actual_flags & SDL_WINDOW_MAXIMIZED) LOG_WARN("MAXIMIZED flag is set!");
+
     return true;
 }
 
