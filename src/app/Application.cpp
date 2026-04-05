@@ -1078,103 +1078,83 @@ bool Application::tryPasteClipboardImage() {
 #ifdef _WIN32
     if (!client_ || active_channel_.empty()) return false;
 
-    // get our window handle for clipboard ownership
+    // use our window's HWND so the clipboard doesn't fight us
+    HWND hwnd = NULL;
     SDL_SysWMinfo wminfo;
     SDL_VERSION(&wminfo.version);
-    HWND hwnd = NULL;
     if (SDL_GetWindowWMInfo(window_, &wminfo)) {
         hwnd = wminfo.info.win.window;
     }
 
-    if (!OpenClipboard(hwnd)) {
-        LOG_WARN("couldn't open clipboard");
-        return false;
+    if (!OpenClipboard(hwnd)) return false;
+
+    // try CF_BITMAP first - the most universal format that windows
+    // auto-synthesizes from screenshots, snipping tool, etc.
+    // then fall back to CF_DIB if that doesn't work.
+    HBITMAP hBitmap = NULL;
+    if (IsClipboardFormatAvailable(CF_BITMAP)) {
+        hBitmap = (HBITMAP)GetClipboardData(CF_BITMAP);
     }
 
-    // check for bitmap data - try CF_DIBV5 first (modern), then CF_DIB (legacy)
-    bool has_dib = IsClipboardFormatAvailable(CF_DIBV5) || IsClipboardFormatAvailable(CF_DIB);
-    if (!has_dib) {
+    if (!hBitmap) {
+        // no bitmap on the clipboard, bail
         CloseClipboard();
         return false;
     }
 
-    // prefer CF_DIB since it's simpler to parse (CF_DIBV5 has extra fields)
-    UINT fmt = IsClipboardFormatAvailable(CF_DIB) ? CF_DIB : CF_DIBV5;
-    HANDLE hData = GetClipboardData(fmt);
-    if (!hData) {
-        LOG_WARN("GetClipboardData returned null");
+    // get bitmap dimensions
+    BITMAP bm;
+    GetObject(hBitmap, sizeof(bm), &bm);
+    int width = bm.bmWidth;
+    int height = bm.bmHeight;
+
+    if (width <= 0 || height <= 0) {
         CloseClipboard();
         return false;
     }
 
-    auto* bmi = static_cast<BITMAPINFOHEADER*>(GlobalLock(hData));
-    if (!bmi || bmi->biWidth <= 0 || bmi->biHeight == 0) {
-        if (bmi) GlobalUnlock(hData);
-        CloseClipboard();
-        return false;
-    }
+    // use GetDIBits to extract the pixels as 32-bit BGRA
+    HDC hdc = GetDC(NULL);
+    HDC memDC = CreateCompatibleDC(hdc);
 
-    int width = bmi->biWidth;
-    int height = std::abs(bmi->biHeight);
-    bool top_down = (bmi->biHeight < 0);
-    int bpp = bmi->biBitCount / 8;
-    if (bpp < 1) bpp = 1;
+    BITMAPINFOHEADER bi = {};
+    bi.biSize = sizeof(bi);
+    bi.biWidth = width;
+    bi.biHeight = -height; // top-down
+    bi.biPlanes = 1;
+    bi.biBitCount = 32;
+    bi.biCompression = BI_RGB;
 
-    // skip past the header and any palette to get to the pixel data
-    int palette_size = 0;
-    if (bmi->biBitCount <= 8) {
-        palette_size = (bmi->biClrUsed ? bmi->biClrUsed : (1 << bmi->biBitCount)) * 4;
-    }
-    auto* pixels = reinterpret_cast<uint8_t*>(bmi) + bmi->biSize + palette_size;
+    std::vector<uint8_t> pixels(width * height * 4);
+    GetDIBits(memDC, hBitmap, 0, height, pixels.data(),
+              (BITMAPINFO*)&bi, DIB_RGB_COLORS);
 
-    // convert BGR(A) to RGBA
-    std::vector<uint8_t> rgba(width * height * 4);
-    int src_stride = ((width * bpp + 3) & ~3);
-
-    for (int y = 0; y < height; y++) {
-        int src_y = top_down ? y : (height - 1 - y);
-        uint8_t* src_row = pixels + src_y * src_stride;
-        uint8_t* dst_row = rgba.data() + y * width * 4;
-
-        for (int x = 0; x < width; x++) {
-            if (bpp >= 3) {
-                dst_row[x * 4 + 0] = src_row[x * bpp + 2];
-                dst_row[x * 4 + 1] = src_row[x * bpp + 1];
-                dst_row[x * 4 + 2] = src_row[x * bpp + 0];
-                dst_row[x * 4 + 3] = (bpp >= 4) ? src_row[x * bpp + 3] : 255;
-            } else {
-                uint8_t v = src_row[x * bpp];
-                dst_row[x * 4 + 0] = v;
-                dst_row[x * 4 + 1] = v;
-                dst_row[x * 4 + 2] = v;
-                dst_row[x * 4 + 3] = 255;
-            }
-        }
-    }
-
-    GlobalUnlock(hData);
+    DeleteDC(memDC);
+    ReleaseDC(NULL, hdc);
     CloseClipboard();
 
-    // write to temp PNG
+    // GetDIBits gives us BGRA, convert to RGBA for PNG
+    for (int i = 0; i < width * height; i++) {
+        std::swap(pixels[i * 4 + 0], pixels[i * 4 + 2]); // B <-> R
+        if (pixels[i * 4 + 3] == 0) pixels[i * 4 + 3] = 255; // fix zero alpha
+    }
+
+    // write temp PNG
     char tmp_dir[MAX_PATH];
     GetTempPathA(MAX_PATH, tmp_dir);
     std::string png_path = std::string(tmp_dir) + "conduit_paste_" +
                            std::to_string(GetTickCount()) + ".png";
 
-    if (!stbi_write_png(png_path.c_str(), width, height, 4, rgba.data(), width * 4)) {
-        LOG_WARN("failed to write clipboard image to " + png_path);
+    if (!stbi_write_png(png_path.c_str(), width, height, 4, pixels.data(), width * 4)) {
+        LOG_WARN("failed to write clipboard image");
         return false;
     }
 
-    LOG_INFO("pasting clipboard image " + std::to_string(width) + "x" +
-             std::to_string(height) + " to " + active_channel_);
+    LOG_INFO("clipboard image " + std::to_string(width) + "x" +
+             std::to_string(height) + " -> uploading");
 
     pool_->enqueue([this, ch = active_channel_, path = png_path]() {
-        if (client_->uploadFile(ch, path)) {
-            LOG_INFO("clipboard image uploaded");
-        } else {
-            LOG_ERROR("clipboard image upload failed");
-        }
+        client_->uploadFile(ch, path);
         std::filesystem::remove(path);
     });
     return true;
