@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <cstring>
 #include "ui/Theme.h"
 #include "input/InputHistory.h"
 
@@ -7,7 +8,8 @@ namespace conduit::ui {
 
 class InputBar {
 public:
-    void render(float x, float y, float width, float height, const Theme& theme);
+    // returns the height it actually needs (for dynamic sizing)
+    float render(float x, float y, float width, float max_height, const Theme& theme);
 
     const std::string& getText() const { return text_; }
     void clear() { text_.clear(); std::memset(input_buf_, 0, sizeof(input_buf_)); }
@@ -15,7 +17,7 @@ public:
     void setChannelName(const std::string& name) { channel_name_ = name; }
     void setHistory(input::InputHistory* h) { history_ = h; }
     void setChannelId(const std::string& id) { channel_id_ = id; }
-    void pasteText(const std::string& text); // insert text at cursor, re-focus
+    void pasteText(const std::string& text);
 
 private:
     std::string text_;

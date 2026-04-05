@@ -114,9 +114,12 @@ void UIManager::render() {
 
     float center_width = win_w - sidebar_left - sidebar_right - thread_w;
 
-    // vertical layout
+    // vertical layout — input bar height is dynamic based on content
     float title_h = layout_.title_bar_height;
     float status_h = layout_.status_bar_height;
+    float max_input_h = win_h * 0.4f; // don't let input eat more than 40% of the window
+    // we'll render the input bar later but need to know its height now
+    // estimate based on content (the render call will use the actual height)
     float input_h = layout_.input_bar_height;
     float center_height = win_h - title_h - input_h - status_h;
 
@@ -159,11 +162,13 @@ void UIManager::render() {
             ImGui::ColorConvertFloat4ToU32(theme_.separator_line));
     }
 
-    // input bar
-    input_bar_.render(0, title_h + center_height, win_w, input_h, theme_);
+    // input bar — render with dynamic height, then place status bar after it
+    float actual_input_h = input_bar_.render(0, title_h + center_height, win_w, max_input_h, theme_);
+    // update for next frame's layout
+    layout_.input_bar_height = actual_input_h;
 
     // status bar
-    status_bar_.render(0, title_h + center_height + input_h, win_w, status_h, theme_);
+    status_bar_.render(0, title_h + center_height + actual_input_h, win_w, status_h, theme_);
 
     // ---- draggable splitters between panes ----
 

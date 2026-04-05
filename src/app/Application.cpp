@@ -1205,15 +1205,23 @@ void Application::handleInputSubmit(const std::string& text) {
         return;
     }
 
+    // optimistic local insert so the message appears immediately
+    // instead of waiting for the API roundtrip + history fetch
+    {
+        slack::Message local_msg;
+        local_msg.ts = std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count() / 1000.0);
+        local_msg.user = client_ ? client_->selfUserId() : "";
+        local_msg.text = text;
+        msg_cache_->store(active_channel_, local_msg);
+        needs_message_sync_ = true;
+    }
+
+    // fire and forget - the API will either succeed or we'll see it fail in logs.
+    // the real message from slack (with proper ts) will replace our optimistic one
+    // when the next history sync happens.
     pool_->enqueue([this, channel = active_channel_, msg = text]() {
-        if (client_->sendMessage(channel, msg)) {
-            LOG_DEBUG("sent message to " + channel);
-            // re-fetch history so we see our own message immediately
-            // can't rely on socket mode echoing it back fast enough
-            auto history = client_->getHistory(channel, 50);
-            msg_cache_->store(channel, history);
-            needs_message_sync_ = true;
-        } else {
+        if (!client_->sendMessage(channel, msg)) {
             LOG_ERROR("failed to send message");
         }
     });
