@@ -264,68 +264,19 @@ void Application::connectToSlack() {
         }
     }
 
-    // no token anywhere? fire up OAuth.
-    // opens the browser to Slack's authorize page, catches the callback
-    // on localhost, exchanges the code for a proper xoxp- user token.
-    // just like the electron app does it. zero manual configuration.
+    // no token? open browser for OAuth, user pastes the code back
     if (user_token.empty()) {
-        LOG_INFO("no token found, starting OAuth flow...");
-        ui_.statusBar().setConnectionState("sign in via browser...");
+        LOG_INFO("no token found, starting OAuth...");
+        ui_.statusBar().setConnectionState("paste auth code below");
         ui_.statusBar().setOrgName("Conduit");
+        ui_.inputBar().setChannelName("paste code here");
+
+        OAuthFlow oauth(
+            "REDACTED_CLIENT_ID",
+            "REDACTED_CLIENT_SECRET"
+        );
+        oauth.openBrowser();
         oauth_in_progress_ = true;
-
-        pool_->enqueue([this]() {
-            // your app credentials from api.slack.com
-            OAuthFlow oauth(
-                "REDACTED_CLIENT_ID",
-                "REDACTED_CLIENT_SECRET"
-            );
-
-            auto result = oauth.execute();
-            oauth_in_progress_ = false;
-
-            if (result.ok && !result.access_token.empty()) {
-                // save the token to keychain so we don't have to do this again
-                KeychainStore::store("conduit", "user_token", result.access_token);
-
-                // create an org config from the OAuth result
-                OrgConfig org;
-                org.name = result.team_name.empty() ? "Slack" : result.team_name;
-                org.user_token = result.access_token;
-                org.auto_connect = true;
-                config_.get().orgs.push_back(org);
-
-                // save a minimal config file so the org persists
-                config_.save(Config::defaultPath());
-
-                LOG_INFO("OAuth complete, connecting to " + org.name);
-
-                // now actually connect (on the main thread's next cycle)
-                // we can't call connectToSlack recursively from a worker thread,
-                // so set a flag and let the main loop handle it
-                needs_channel_sync_ = true;
-
-                // do the actual connection right here since we're already on a thread
-                std::string data_dir = platform::getDataDir();
-                platform::ensureDir(data_dir);
-                db_ = std::make_unique<cache::Database>();
-                db_->open(data_dir + "/" + org.name + ".db");
-                msg_cache_ = std::make_unique<cache::MessageCache>(*db_);
-
-                ui_.bufferView().setImageRenderer(&image_renderer_);
-                ui_.bufferView().setGifRenderer(&gif_renderer_);
-                ui_.bufferView().setAuthToken(result.access_token);
-
-                client_ = std::make_unique<slack::SlackClient>(org, *db_);
-                if (client_->connect()) {
-                    needs_channel_sync_ = true;
-                    LOG_INFO("connected to " + org.name);
-                }
-            } else {
-                LOG_ERROR("OAuth failed: " + result.error);
-                ui_.statusBar().setConnectionState("auth failed");
-            }
-        });
         return;
     }
 
@@ -1308,6 +1259,58 @@ bool Application::tryPasteClipboardImage() {
 
 void Application::handleInputSubmit(const std::string& text) {
     if (text.empty()) return;
+
+    // if we're waiting for an OAuth code, treat the input as the auth code
+    if (oauth_in_progress_) {
+        oauth_in_progress_ = false;
+        ui_.statusBar().setConnectionState("exchanging code...");
+
+        // trim whitespace from the pasted code
+        std::string code = text;
+        code.erase(0, code.find_first_not_of(" \t\r\n"));
+        code.erase(code.find_last_not_of(" \t\r\n") + 1);
+
+        pool_->enqueue([this, code]() {
+            OAuthFlow oauth(
+                "REDACTED_CLIENT_ID",
+                "REDACTED_CLIENT_SECRET"
+            );
+            auto result = oauth.exchangeCode(code);
+
+            if (result.ok && !result.access_token.empty()) {
+                KeychainStore::store("conduit", "user_token", result.access_token);
+
+                OrgConfig org;
+                org.name = result.team_name.empty() ? "Slack" : result.team_name;
+                org.user_token = result.access_token;
+                org.auto_connect = true;
+                config_.get().orgs.push_back(org);
+                config_.save(Config::defaultPath());
+
+                LOG_INFO("OAuth success, connecting to " + org.name);
+
+                // set up and connect
+                std::string data_dir = platform::getDataDir();
+                platform::ensureDir(data_dir);
+                db_ = std::make_unique<cache::Database>();
+                db_->open(data_dir + "/" + org.name + ".db");
+                msg_cache_ = std::make_unique<cache::MessageCache>(*db_);
+
+                ui_.bufferView().setImageRenderer(&image_renderer_);
+                ui_.bufferView().setGifRenderer(&gif_renderer_);
+                ui_.bufferView().setAuthToken(result.access_token);
+
+                client_ = std::make_unique<slack::SlackClient>(org, *db_);
+                if (client_->connect()) {
+                    needs_channel_sync_ = true;
+                }
+            } else {
+                LOG_ERROR("OAuth failed: " + result.error);
+                ui_.statusBar().setConnectionState("auth failed: " + result.error);
+            }
+        });
+        return;
+    }
 
     // save to input history
     input_history_.add(active_channel_, text);

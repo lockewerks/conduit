@@ -1,12 +1,10 @@
 #pragma once
 #include <string>
-#include <optional>
-#include <functional>
 
 namespace conduit {
 
 struct OAuthResult {
-    std::string access_token;  // xoxp- user token
+    std::string access_token;
     std::string team_id;
     std::string team_name;
     std::string user_id;
@@ -14,37 +12,26 @@ struct OAuthResult {
     std::string error;
 };
 
-// handles the full OAuth 2.0 flow for Slack:
-// 1. spin up a tiny HTTP server on localhost
-// 2. open the browser to slack's authorize page
-// 3. catch the redirect with the auth code
-// 4. exchange the code for a token
-// 5. profit
+// OAuth 2.0 for Slack, copy-paste style.
+// opens the browser, user approves, copies the code, pastes it in conduit.
+// we exchange the code for a token. no localhost server, no HTTPS, no bullshit.
 class OAuthFlow {
 public:
     OAuthFlow(const std::string& client_id, const std::string& client_secret);
 
-    // kick off the flow. blocks until the user completes auth or timeout.
-    // returns the token or an error.
-    OAuthResult execute();
+    // open the browser to slack's authorize page
+    void openBrowser();
 
-    // non-blocking version: start the flow, call poll() each frame
-    void start();
-    bool isComplete() const { return complete_; }
-    OAuthResult result() const { return result_; }
+    // exchange an authorization code for a token
+    OAuthResult exchangeCode(const std::string& code);
+
+    // the URL the user needs to visit (in case openBrowser fails)
+    std::string authorizeURL() const { return auth_url_; }
 
 private:
     std::string client_id_;
     std::string client_secret_;
-    int port_ = 0;
-    bool complete_ = false;
-    OAuthResult result_;
-
-    // find an available port for the localhost callback
-    int findAvailablePort();
-
-    // exchange the auth code for an access token
-    OAuthResult exchangeCode(const std::string& code, const std::string& redirect_uri);
+    std::string auth_url_;
 };
 
 } // namespace conduit
