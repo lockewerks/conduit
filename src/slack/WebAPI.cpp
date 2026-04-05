@@ -183,59 +183,89 @@ std::vector<uint8_t> WebAPI::downloadFile(const std::string& url) {
 std::optional<nlohmann::json> WebAPI::uploadFile(const std::string& channel,
                                                   const std::string& filepath,
                                                   const std::string& title) {
+    // slack killed files.upload (method_deprecated), so we use the new
+    // three-step flow: getUploadURLExternal -> PUT file -> completeUploadExternal
+    // because apparently uploading a file was too simple before
+
+    // figure out file size and name
+    std::ifstream file(filepath, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        LOG_ERROR("can't open file: " + filepath);
+        return std::nullopt;
+    }
+    size_t file_size = file.tellg();
+    file.seekg(0);
+
+    std::string filename = filepath;
+    auto slash = filename.find_last_of("/\\");
+    if (slash != std::string::npos) filename = filename.substr(slash + 1);
+
+    // step 1: get a presigned upload URL from slack
+    std::string params = "filename=" + filename + "&length=" + std::to_string(file_size);
+    auto step1 = get("files.getUploadURLExternal", params);
+    if (!step1 || !step1->value("ok", false)) {
+        LOG_ERROR("files.getUploadURLExternal failed: " +
+                  (step1 ? step1->value("error", "unknown") : "no response"));
+        return std::nullopt;
+    }
+
+    std::string upload_url = step1->value("upload_url", "");
+    std::string file_id = step1->value("file_id", "");
+    if (upload_url.empty() || file_id.empty()) {
+        LOG_ERROR("no upload_url or file_id in response");
+        return std::nullopt;
+    }
+
+    // read the file into memory
+    std::vector<char> file_data(file_size);
+    file.read(file_data.data(), file_size);
+    file.close();
+
+    // step 2: PUT the file bytes to the presigned URL
     CURL* curl = curl_easy_init();
     if (!curl) return std::nullopt;
 
-    std::string url = SLACK_API_BASE + "files.upload";
-
-    curl_mime* mime = curl_mime_init(curl);
-    curl_mimepart* part;
-
-    // the file itself
-    part = curl_mime_addpart(mime);
-    curl_mime_name(part, "file");
-    curl_mime_filedata(part, filepath.c_str());
-
-    // channel
-    part = curl_mime_addpart(mime);
-    curl_mime_name(part, "channels");
-    curl_mime_data(part, channel.c_str(), CURL_ZERO_TERMINATED);
-
-    // title
-    if (!title.empty()) {
-        part = curl_mime_addpart(mime);
-        curl_mime_name(part, "title");
-        curl_mime_data(part, title.c_str(), CURL_ZERO_TERMINATED);
-    }
-
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120); // uploads can take a while
-
-    struct curl_slist* headers = nullptr;
-    std::string auth = "Authorization: Bearer " + token_;
-    headers = curl_slist_append(headers, auth.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-
-    std::string response;
+    std::string put_response;
+    curl_easy_setopt(curl, CURLOPT_URL, upload_url.c_str());
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "POST");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &put_response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120);
+
+    // upload as multipart form with the file
+    curl_mime* mime = curl_mime_init(curl);
+    curl_mimepart* part = curl_mime_addpart(mime);
+    curl_mime_name(part, "file");
+    curl_mime_data(part, file_data.data(), file_size);
+    curl_mime_filename(part, filename.c_str());
+    curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
 
     CURLcode res = curl_easy_perform(curl);
     curl_mime_free(mime);
     curl_easy_cleanup(curl);
-    curl_slist_free_all(headers);
 
     if (res != CURLE_OK) {
-        LOG_ERROR("file upload failed");
+        LOG_ERROR("file upload PUT failed");
         return std::nullopt;
     }
 
-    try {
-        return nlohmann::json::parse(response);
-    } catch (...) {
+    LOG_INFO("file uploaded to presigned URL, completing...");
+
+    // step 3: tell slack we're done and share to the channel
+    nlohmann::json complete_body = {
+        {"files", {{{"id", file_id}, {"title", title.empty() ? filename : title}}}},
+        {"channel_id", channel}
+    };
+
+    auto step3 = post("files.completeUploadExternal", complete_body);
+    if (!step3 || !step3->value("ok", false)) {
+        LOG_ERROR("files.completeUploadExternal failed: " +
+                  (step3 ? step3->value("error", "unknown") : "no response"));
         return std::nullopt;
     }
+
+    LOG_INFO("file shared to channel: " + filename);
+    return step3;
 }
 
 } // namespace conduit::slack

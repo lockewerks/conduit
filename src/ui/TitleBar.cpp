@@ -149,39 +149,17 @@ void TitleBar::render(float x, float y, float width, float height, const Theme& 
         ImGui::PopStyleColor();
     }
 
-    // ---- drag to move the window ----
-    // the title bar area (excluding buttons) is draggable
-    // check if mouse is in the title bar but NOT over a button
+    // drag-to-move is handled by SDL's hit test callback, not here.
+    // doing it in both places causes the window to flicker because
+    // SDL and our code fight over the window position every frame.
+
+    // double-click title bar to maximize/restore
     if (window_) {
         ImVec2 mouse = ImGui::GetMousePos();
         bool in_titlebar = (mouse.y >= p.y && mouse.y < p.y + height &&
                             mouse.x >= p.x && mouse.x < p.x + btn_x);
-        bool over_button = ImGui::IsAnyItemHovered();
-
-        if (in_titlebar && !over_button) {
-            if (ImGui::IsMouseClicked(0)) {
-                dragging_ = true;
-                int wx, wy;
-                SDL_GetWindowPosition(window_, &wx, &wy);
-                drag_start_x_ = (int)mouse.x - wx;
-                drag_start_y_ = (int)mouse.y - wy;
-            }
-
-            // double-click to maximize/restore
-            if (ImGui::IsMouseDoubleClicked(0)) {
-                wants_maximize_ = true;
-                dragging_ = false;
-            }
-        }
-
-        if (dragging_) {
-            if (ImGui::IsMouseDown(0)) {
-                int mx = (int)mouse.x - drag_start_x_;
-                int my = (int)mouse.y - drag_start_y_;
-                SDL_SetWindowPosition(window_, mx, my);
-            } else {
-                dragging_ = false;
-            }
+        if (in_titlebar && !ImGui::IsAnyItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+            wants_maximize_ = true;
         }
     }
 }

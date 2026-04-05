@@ -985,11 +985,12 @@ void Application::processInput() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         // ctrl+v image paste
+        // catch ctrl+v for image paste
         if (event.type == SDL_KEYDOWN &&
             event.key.keysym.sym == SDLK_v &&
             (event.key.keysym.mod & KMOD_CTRL)) {
             if (tryPasteClipboardImage()) {
-                continue; // ate the event
+                continue;
             }
         }
 
@@ -1034,85 +1035,68 @@ void Application::handleKeyDown(const SDL_KeyboardEvent& key) {
 bool Application::tryPasteClipboardImage() {
 #ifdef _WIN32
     if (!client_ || active_channel_.empty()) return false;
+    if (!OpenClipboard(NULL)) return false;
 
-    // use our window's HWND so the clipboard doesn't fight us
-    HWND hwnd = NULL;
-    SDL_SysWMinfo wminfo;
-    SDL_VERSION(&wminfo.version);
-    if (SDL_GetWindowWMInfo(window_, &wminfo)) {
-        hwnd = wminfo.info.win.window;
-    }
-
-    if (!OpenClipboard(hwnd)) return false;
-
-    // try CF_BITMAP first - the most universal format that windows
-    // auto-synthesizes from screenshots, snipping tool, etc.
-    // then fall back to CF_DIB if that doesn't work.
-    HBITMAP hBitmap = NULL;
-    if (IsClipboardFormatAvailable(CF_BITMAP)) {
-        hBitmap = (HBITMAP)GetClipboardData(CF_BITMAP);
-    }
-
-    if (!hBitmap) {
-        // no bitmap on the clipboard, bail
+    if (!IsClipboardFormatAvailable(CF_DIB)) {
         CloseClipboard();
         return false;
     }
 
-    // get bitmap dimensions
-    BITMAP bm;
-    GetObject(hBitmap, sizeof(bm), &bm);
-    int width = bm.bmWidth;
-    int height = bm.bmHeight;
+    HANDLE hDib = GetClipboardData(CF_DIB);
+    if (!hDib) { CloseClipboard(); return false; }
 
-    if (width <= 0 || height <= 0) {
-        CloseClipboard();
-        return false;
+    auto* bmi = static_cast<BITMAPINFOHEADER*>(GlobalLock(hDib));
+    if (!bmi) { CloseClipboard(); return false; }
+
+    int width = bmi->biWidth;
+    int height = std::abs(bmi->biHeight);
+    bool top_down = (bmi->biHeight < 0);
+    int bit_count = bmi->biBitCount;
+    if (width <= 0 || height <= 0 || bit_count < 24) {
+        GlobalUnlock(hDib); CloseClipboard(); return false;
     }
 
-    // use GetDIBits to extract the pixels as 32-bit BGRA
-    HDC hdc = GetDC(NULL);
-    HDC memDC = CreateCompatibleDC(hdc);
+    int masks_size = (bmi->biCompression == BI_BITFIELDS) ? 12 : 0;
+    auto* src = reinterpret_cast<uint8_t*>(bmi) + bmi->biSize + masks_size;
+    int bpp = bit_count / 8;
+    int stride = ((width * bpp + 3) & ~3);
 
-    BITMAPINFOHEADER bi = {};
-    bi.biSize = sizeof(bi);
-    bi.biWidth = width;
-    bi.biHeight = -height; // top-down
-    bi.biPlanes = 1;
-    bi.biBitCount = 32;
-    bi.biCompression = BI_RGB;
+    std::vector<uint8_t> rgba(width * height * 4);
+    for (int y = 0; y < height; y++) {
+        int sy = top_down ? y : (height - 1 - y);
+        uint8_t* srow = src + sy * stride;
+        uint8_t* drow = rgba.data() + y * width * 4;
+        for (int x = 0; x < width; x++) {
+            drow[x*4+0] = srow[x*bpp+2];
+            drow[x*4+1] = srow[x*bpp+1];
+            drow[x*4+2] = srow[x*bpp+0];
+            drow[x*4+3] = (bpp >= 4) ? srow[x*bpp+3] : 255;
+            if (drow[x*4+3] == 0) drow[x*4+3] = 255;
+        }
+    }
 
-    std::vector<uint8_t> pixels(width * height * 4);
-    GetDIBits(memDC, hBitmap, 0, height, pixels.data(),
-              (BITMAPINFO*)&bi, DIB_RGB_COLORS);
-
-    DeleteDC(memDC);
-    ReleaseDC(NULL, hdc);
+    GlobalUnlock(hDib);
     CloseClipboard();
 
-    // GetDIBits gives us BGRA, convert to RGBA for PNG
-    for (int i = 0; i < width * height; i++) {
-        std::swap(pixels[i * 4 + 0], pixels[i * 4 + 2]); // B <-> R
-        if (pixels[i * 4 + 3] == 0) pixels[i * 4 + 3] = 255; // fix zero alpha
-    }
+    char tmp[MAX_PATH];
+    GetTempPathA(MAX_PATH, tmp);
+    std::string path = std::string(tmp) + "conduit_" + std::to_string(GetTickCount()) + ".png";
 
-    // write temp PNG
-    char tmp_dir[MAX_PATH];
-    GetTempPathA(MAX_PATH, tmp_dir);
-    std::string png_path = std::string(tmp_dir) + "conduit_paste_" +
-                           std::to_string(GetTickCount()) + ".png";
-
-    if (!stbi_write_png(png_path.c_str(), width, height, 4, pixels.data(), width * 4)) {
-        LOG_WARN("failed to write clipboard image");
+    if (!stbi_write_png(path.c_str(), width, height, 4, rgba.data(), width * 4)) {
+        LOG_ERROR("failed to write clipboard PNG");
         return false;
     }
 
     LOG_INFO("clipboard image " + std::to_string(width) + "x" +
-             std::to_string(height) + " -> uploading");
+             std::to_string(height) + " -> uploading to " + active_channel_);
 
-    pool_->enqueue([this, ch = active_channel_, path = png_path]() {
-        client_->uploadFile(ch, path);
-        std::filesystem::remove(path);
+    pool_->enqueue([this, ch = active_channel_, p = path]() {
+        client_->uploadFile(ch, p);
+        std::filesystem::remove(p);
+        // refresh to see our upload
+        auto history = client_->getHistory(ch, 50);
+        msg_cache_->store(ch, history);
+        needs_message_sync_ = true;
     });
     return true;
 #else
