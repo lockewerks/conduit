@@ -59,6 +59,13 @@ CURL* WebAPI::createHandle(const std::string& url) {
     std::string auth = "Authorization: Bearer " + token_;
     headers = curl_slist_append(headers, auth.c_str());
     headers = curl_slist_append(headers, "Content-Type: application/json; charset=utf-8");
+
+    // xoxc tokens are useless without the session cookie. slack checks both
+    // because apparently one auth mechanism wasn't paranoid enough.
+    if (!cookie_.empty()) {
+        std::string cookie_hdr = "Cookie: d=" + cookie_;
+        headers = curl_slist_append(headers, cookie_hdr.c_str());
+    }
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
     return curl;
@@ -143,6 +150,10 @@ std::optional<nlohmann::json> WebAPI::postForm(const std::string& method,
     std::string auth = "Authorization: Bearer " + token_;
     headers = curl_slist_append(headers, auth.c_str());
     headers = curl_slist_append(headers, "Content-Type: application/x-www-form-urlencoded");
+    if (!cookie_.empty()) {
+        std::string cookie_hdr = "Cookie: d=" + cookie_;
+        headers = curl_slist_append(headers, cookie_hdr.c_str());
+    }
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
     LOG_DEBUG("POST (form) " + method);
@@ -166,6 +177,10 @@ std::vector<uint8_t> WebAPI::downloadFile(const std::string& url) {
     struct curl_slist* headers = nullptr;
     std::string auth = "Authorization: Bearer " + token_;
     headers = curl_slist_append(headers, auth.c_str());
+    if (!cookie_.empty()) {
+        std::string cookie_hdr = "Cookie: d=" + cookie_;
+        headers = curl_slist_append(headers, cookie_hdr.c_str());
+    }
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
     CURLcode res = curl_easy_perform(curl);

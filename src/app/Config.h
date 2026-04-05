@@ -10,6 +10,7 @@ struct OrgConfig {
     std::string app_token;  // xapp- token for socket mode
     std::string user_token; // xoxp- token for API calls
     std::string bot_token;  // xoxb- optional
+    std::string d_cookie;   // session cookie for xoxc- tokens (pilfered from Slack desktop)
     bool auto_connect = true;
     std::vector<std::string> auto_open; // channels to open on connect
 };

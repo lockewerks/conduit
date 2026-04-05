@@ -31,6 +31,7 @@ public:
                                               const std::string& title = "");
 
     void setToken(const std::string& token) { token_ = token; }
+    void setCookie(const std::string& cookie) { cookie_ = cookie; }
     void setTimeout(int seconds) { timeout_ = seconds; }
 
     // last HTTP status code for debugging
@@ -40,6 +41,7 @@ public:
 
 private:
     std::string token_;
+    std::string cookie_; // d= session cookie for xoxc tokens
     int timeout_ = 30;
     long last_status_ = 0;
     int last_retry_after_ = 0;

@@ -1,5 +1,6 @@
 #include "app/Application.h"
 #include "app/KeychainStore.h"
+#include "app/SlackTokenFinder.h"
 #include "util/Logger.h"
 #include "util/Platform.h"
 #include "util/TimeFormat.h"
@@ -19,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include "stb_image.h"
 #include "stb_image_write.h"
 
 #ifdef _WIN32
@@ -166,6 +168,30 @@ bool Application::initSDL() {
     if (actual_flags & SDL_WINDOW_BORDERLESS) LOG_WARN("BORDERLESS flag is set!");
     if (actual_flags & SDL_WINDOW_MAXIMIZED) LOG_WARN("MAXIMIZED flag is set!");
 
+    // set window icon - try a few paths because MSVC puts the exe in weird places
+    {
+        std::string exe_dir = getExeDir();
+        std::vector<std::string> icon_paths = {
+            exe_dir + "/assets/icons/conduit.png",
+            exe_dir + "/../assets/icons/conduit.png",
+            "assets/icons/conduit.png",
+        };
+        for (auto& path : icon_paths) {
+            int iw, ih, ic;
+            unsigned char* pixels = stbi_load(path.c_str(), &iw, &ih, &ic, 4);
+            if (pixels) {
+                SDL_Surface* icon = SDL_CreateRGBSurfaceFrom(pixels, iw, ih, 32, iw * 4,
+                    0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000);
+                if (icon) {
+                    SDL_SetWindowIcon(window_, icon);
+                    SDL_FreeSurface(icon);
+                }
+                stbi_image_free(pixels);
+                break;
+            }
+        }
+    }
+
     return true;
 }
 
@@ -237,6 +263,19 @@ void Application::connectToSlack() {
     if (app_token.empty()) {
         auto stored = KeychainStore::retrieve("conduit", org.name + "/app_token");
         if (stored) app_token = *stored;
+    }
+
+    // no token? let's see if Slack desktop is installed and steal one
+    if (user_token.empty()) {
+        auto tokens = SlackTokenFinder::findTokens();
+        if (!tokens.empty()) {
+            user_token = tokens[0].xoxc_token;
+            // xoxc tokens need the session cookie on every request or slack
+            // throws a fit. stash it so WebAPI can send it along.
+            org.d_cookie = tokens[0].d_cookie;
+            LOG_INFO("snagged a token from Slack desktop" +
+                     (tokens[0].team_name.empty() ? "" : " (" + tokens[0].team_name + ")"));
+        }
     }
 
     if (user_token.empty()) {

@@ -15,6 +15,9 @@ bool SlackClient::connect() {
 
     // set up the REST API client
     api_ = std::make_unique<WebAPI>(config_.user_token);
+    if (!config_.d_cookie.empty()) {
+        api_->setCookie(config_.d_cookie);
+    }
 
     // validate the token
     auth_info_ = SlackAuth::test(*api_);
