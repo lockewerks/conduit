@@ -38,30 +38,9 @@ OAuthFlow::OAuthFlow(const std::string& client_id, const std::string& client_sec
     : client_id_(client_id), client_secret_(client_secret) {}
 
 int OAuthFlow::findAvailablePort() {
-    // try a few ports in the ephemeral range
-#ifdef _WIN32
-    WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa);
-#endif
-
-    SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock == INVALID_SOCKET) return 19847; // fallback
-
-    struct sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = 0; // let the OS pick
-
-    if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
-        int addr_len = sizeof(addr);
-        getsockname(sock, (struct sockaddr*)&addr, &addr_len);
-        int port = ntohs(addr.sin_port);
-        closesocket(sock);
-        return port;
-    }
-
-    closesocket(sock);
-    return 19847;
+    // fixed port so the redirect URI matches what's registered in the Slack app.
+    // if 17847 is busy, tough luck (but it won't be, it's obscure enough).
+    return 17847;
 }
 
 OAuthResult OAuthFlow::execute() {
