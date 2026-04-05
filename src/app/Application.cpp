@@ -1032,7 +1032,19 @@ void Application::run() {
 void Application::processInput() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
-        // always let imgui process events first - don't break text input
+        // check for ctrl+v at the rawest level possible, before imgui or anyone
+        // else can eat it. this is our image paste check.
+        if (event.type == SDL_KEYDOWN &&
+            event.key.keysym.sym == SDLK_v &&
+            (event.key.keysym.mod & KMOD_CTRL)) {
+            if (tryPasteClipboardImage()) {
+                // we pasted an image, skip this event entirely
+                SDL_SetWindowTitle(window_, "Conduit - image uploading...");
+                continue;
+            }
+            // no image on clipboard, fall through to imgui for text paste
+        }
+
         ImGui_ImplSDL2_ProcessEvent(&event);
 
         switch (event.type) {
@@ -1065,10 +1077,7 @@ void Application::handleKeyDown(const SDL_KeyboardEvent& key) {
     // ctrl+v: try to paste an image from clipboard.
     // we do this AFTER imgui processes the event so text paste still works.
     // if the clipboard has a bitmap (and no text), we upload it as an image.
-    if (key.keysym.sym == SDLK_v && (key.keysym.mod & KMOD_CTRL)) {
-        tryPasteClipboardImage();
-        // don't return - let imgui handle text paste too if there is text
-    }
+    // ctrl+v image paste is handled in processInput() before imgui
 
     // let the keybinding system try
     if (keys_.handleKeyDown(key)) return;
