@@ -138,8 +138,9 @@ jobs:
 
           cp AppDir/${{ env.APP_ID }}.desktop AppDir/usr/share/applications/
 
+          sudo apt-get install -y imagemagick -qq
           if [ -f assets/icons/conduit.png ]; then
-            cp assets/icons/conduit.png AppDir/usr/share/icons/hicolor/256x256/apps/${{ env.APP_ID }}.png
+            convert assets/icons/conduit.png -resize 256x256 AppDir/usr/share/icons/hicolor/256x256/apps/${{ env.APP_ID }}.png
           else
             convert -size 256x256 xc:'#1a1a2e' AppDir/usr/share/icons/hicolor/256x256/apps/${{ env.APP_ID }}.png 2>/dev/null || \
             python3 -c "
