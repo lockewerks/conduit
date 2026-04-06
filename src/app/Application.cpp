@@ -369,6 +369,7 @@ void Application::connectToSlack() {
 
     client_ = std::make_unique<slack::SlackClient>(resolved, *db_);
 
+    resolved_token_ = user_token;
     ui_.bufferView().setImageRenderer(&image_renderer_);
     ui_.bufferView().setGifRenderer(&gif_renderer_);
     ui_.bufferView().setAuthToken(user_token);
@@ -1917,11 +1918,9 @@ void Application::syncBufferView() {
                 std::string img_url = f.thumb_360.empty() ? f.url_private : f.thumb_360;
                 if (!img_url.empty()) {
                     if (f.mimetype == "image/gif") {
-                        gif_renderer_.requestGif(img_url,
-                            config_.get().orgs[0].user_token, *pool_);
+                        gif_renderer_.requestGif(img_url, resolved_token_, *pool_);
                     } else {
-                        image_renderer_.requestImage(img_url,
-                            config_.get().orgs[0].user_token, *pool_);
+                        image_renderer_.requestImage(img_url, resolved_token_, *pool_);
                     }
                 }
             }

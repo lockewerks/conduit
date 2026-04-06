@@ -102,6 +102,9 @@ private:
     enum class AuthState { None, WaitingForToken, WaitingForCookie } auth_state_ = AuthState::None;
     std::string pending_token_;
 
+    // resolved auth token for image/gif downloads
+    std::string resolved_token_;
+
     // when editing a specific message via right-click context menu
     std::string editing_ts_;
 

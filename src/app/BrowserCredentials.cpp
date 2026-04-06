@@ -112,37 +112,43 @@ std::optional<std::string> BrowserCredentials::extractToken(const std::string& l
     // scan .ldb and .log files in the leveldb directory for the xoxc- token.
     // levelDB files contain raw key-value data — the token is stored as part
     // of the localConfig_v2 JSON blob, unencrypted, in plaintext. thanks google.
-    if (!fs::exists(local_storage_path)) return std::nullopt;
+    try {
+        if (!fs::exists(local_storage_path) || !fs::is_directory(local_storage_path))
+            return std::nullopt;
 
-    for (auto& entry : fs::directory_iterator(local_storage_path)) {
-        std::string ext = entry.path().extension().string();
-        if (ext != ".ldb" && ext != ".log") continue;
+        for (auto& entry : fs::directory_iterator(local_storage_path)) {
+            try {
+                std::string ext = entry.path().extension().string();
+                if (ext != ".ldb" && ext != ".log") continue;
 
-        std::ifstream file(entry.path(), std::ios::binary);
-        if (!file.is_open()) continue;
+                std::ifstream file(entry.path(), std::ios::binary);
+                if (!file.is_open()) continue;
 
-        std::string content((std::istreambuf_iterator<char>(file)),
-                             std::istreambuf_iterator<char>());
+                std::string content((std::istreambuf_iterator<char>(file)),
+                                     std::istreambuf_iterator<char>());
 
-        // look for xoxc- token pattern
-        size_t pos = content.find("xoxc-");
-        if (pos == std::string::npos) continue;
+                size_t pos = content.find("xoxc-");
+                if (pos == std::string::npos) continue;
 
-        // extract the token — it's alphanumeric with dashes, ends at a
-        // non-token character (quote, null, whitespace, etc)
-        size_t end = pos;
-        while (end < content.size()) {
-            char c = content[end];
-            if (std::isalnum(c) || c == '-') end++;
-            else break;
+                size_t end = pos;
+                while (end < content.size()) {
+                    char c = content[end];
+                    if (std::isalnum(c) || c == '-') end++;
+                    else break;
+                }
+
+                std::string token = content.substr(pos, end - pos);
+                if (token.size() > 20) {
+                    LOG_INFO("found Slack token in browser localStorage (" +
+                             std::to_string(token.size()) + " chars)");
+                    return token;
+                }
+            } catch (...) {
+                continue; // skip files we can't read
+            }
         }
-
-        std::string token = content.substr(pos, end - pos);
-        if (token.size() > 20) { // sanity check — real tokens are long
-            LOG_INFO("found Slack token in browser localStorage (" +
-                     std::to_string(token.size()) + " chars)");
-            return token;
-        }
+    } catch (...) {
+        // directory iteration failed (permissions, locked files, etc)
     }
 
     return std::nullopt;
@@ -269,8 +275,8 @@ std::optional<std::string> BrowserCredentials::decryptChromeValue(
 
 std::optional<std::string> BrowserCredentials::extractCookie(const std::string& user_data_path) {
 #ifdef _WIN32
+    try {
     // Chrome locks the Cookies file while running. copy it to a temp location.
-    // this is the kind of thing that makes antivirus software nervous.
     std::vector<std::string> cookie_paths = {
         user_data_path + "\\Default\\Network\\Cookies",
         user_data_path + "\\Default\\Cookies",
@@ -328,6 +334,14 @@ std::optional<std::string> BrowserCredentials::extractCookie(const std::string& 
     fs::remove(tmp_path);
     return result;
 
+    } catch (const std::exception& e) {
+        LOG_WARN("cookie extraction failed: " + std::string(e.what()));
+        return std::nullopt;
+    } catch (...) {
+        LOG_WARN("cookie extraction failed with unknown error");
+        return std::nullopt;
+    }
+
 #else
     // macOS/Linux: cookie decryption is more involved (keychain/kwallet)
     // punt for now — users paste the cookie manually on non-Windows
@@ -337,28 +351,45 @@ std::optional<std::string> BrowserCredentials::extractCookie(const std::string& 
 
 std::vector<BrowserCredential> BrowserCredentials::scan() {
     std::vector<BrowserCredential> results;
-    auto profiles = findChromiumProfiles();
 
-    for (auto& [name, path] : profiles) {
-        LOG_INFO("scanning " + name + " for Slack credentials...");
+    try {
+        auto profiles = findChromiumProfiles();
 
-        // try Default profile first, then numbered profiles
-        std::vector<std::string> profile_dirs = {"Default", "Profile 1", "Profile 2", "Profile 3"};
+        for (auto& [name, path] : profiles) {
+            try {
+                LOG_INFO("scanning " + name + " for Slack credentials...");
 
-        for (auto& profile : profile_dirs) {
-            std::string ls_path = path + "/" + profile + "/Local Storage/leveldb";
-            // windows uses backslashes
-            std::replace(ls_path.begin(), ls_path.end(), '/', '\\');
+                std::vector<std::string> profile_dirs = {
+                    "Default", "Profile 1", "Profile 2", "Profile 3"
+                };
 
-            auto token = extractToken(ls_path);
-            if (!token) continue;
+                for (auto& profile : profile_dirs) {
+                    std::string ls_path = path +
+#ifdef _WIN32
+                        "\\" + profile + "\\Local Storage\\leveldb";
+#else
+                        "/" + profile + "/Local Storage/leveldb";
+#endif
 
-            auto cookie = extractCookie(path);
+                    auto token = extractToken(ls_path);
+                    if (!token) continue;
 
-            results.push_back({name, *token, cookie.value_or("")});
-            LOG_INFO("got credentials from " + name + " (" + profile + ")");
-            break; // one per browser is enough
+                    auto cookie = extractCookie(path);
+
+                    results.push_back({name, *token, cookie.value_or("")});
+                    LOG_INFO("got credentials from " + name + " (" + profile + ")");
+                    break;
+                }
+            } catch (const std::exception& e) {
+                LOG_WARN("error scanning " + name + ": " + e.what());
+            } catch (...) {
+                LOG_WARN("unknown error scanning " + name);
+            }
         }
+    } catch (const std::exception& e) {
+        LOG_ERROR("browser scan failed: " + std::string(e.what()));
+    } catch (...) {
+        LOG_ERROR("browser scan failed with unknown error");
     }
 
     return results;
