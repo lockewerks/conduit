@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(conduit VERSION 0.1.0 LANGUAGES CXX)
+project(conduit VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,7 +20,12 @@ find_package(OpenGL REQUIRED)
 find_package(CURL REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json REQUIRED)
-find_package(libwebsockets CONFIG REQUIRED)
+# libwebsockets: vcpkg provides cmake config, system packages often only have pkg-config
+find_package(libwebsockets CONFIG QUIET)
+if(NOT libwebsockets_FOUND)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LWS REQUIRED IMPORTED_TARGET libwebsockets)
+endif()
 find_package(GIF REQUIRED)
 
 # --- header-only / small deps via FetchContent ---
@@ -83,9 +88,19 @@ target_link_libraries(conduit PRIVATE
     SQLite3::SQLite3
     nlohmann_json::nlohmann_json
     tomlplusplus::tomlplusplus
-    websockets_shared
     GIF::GIF
 )
+
+# link libwebsockets — target name depends on how it was found
+if(TARGET websockets_shared)
+    target_link_libraries(conduit PRIVATE websockets_shared)
+elseif(TARGET websockets)
+    target_link_libraries(conduit PRIVATE websockets)
+elseif(TARGET PkgConfig::LWS)
+    target_link_libraries(conduit PRIVATE PkgConfig::LWS)
+else()
+    message(FATAL_ERROR "libwebsockets not found")
+endif()
 
 # MSVC multi-config generators put output in Debug/ or Release/ subdirs
 # we need assets next to the exe regardless of config

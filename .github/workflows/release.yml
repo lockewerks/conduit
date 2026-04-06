@@ -80,11 +80,7 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: 'a42af01b72c28a8e1d7b48107b33e4f286a55ef6'
-
-      - name: Install dependencies (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          vcpkg install sdl2:x64-windows curl:x64-windows sqlite3:x64-windows giflib:x64-windows libwebsockets:x64-windows nlohmann-json:x64-windows
+          runVcpkgInstall: true
         env:
           VCPKG_DEFAULT_TRIPLET: x64-windows
 
