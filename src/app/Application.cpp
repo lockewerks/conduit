@@ -14,8 +14,11 @@
 #include <windows.h>
 #include <shellapi.h>
 #endif
-#include <SDL_syswm.h>
+#ifdef __APPLE__
+#include <OpenGL/gl.h>
+#else
 #include <GL/gl.h>
+#endif
 
 #include <filesystem>
 #include <fstream>

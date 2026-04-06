@@ -14,18 +14,41 @@ endif()
 option(CONDUIT_BUILD_TESTS "Build test suite" ON)
 option(CONDUIT_USE_VCPKG "Use vcpkg for dependencies" ON)
 
-# --- dependencies via vcpkg / find_package ---
-find_package(SDL2 REQUIRED)
+# --- dependencies ---
+# use find_package first (works with vcpkg), fall back to pkg-config for
+# system packages on Linux that don't ship cmake config files.
+find_package(PkgConfig QUIET)
+
+find_package(SDL2 QUIET)
+if(NOT SDL2_FOUND AND PkgConfig_FOUND)
+    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
+    add_library(SDL2::SDL2 ALIAS PkgConfig::SDL2)
+    # SDL2main doesn't exist via pkg-config, create a dummy
+    add_library(SDL2_main_dummy INTERFACE)
+    add_library(SDL2::SDL2main ALIAS SDL2_main_dummy)
+endif()
+
 find_package(OpenGL REQUIRED)
-find_package(CURL REQUIRED)
-find_package(SQLite3 REQUIRED)
+
+find_package(CURL QUIET)
+if(NOT CURL_FOUND AND PkgConfig_FOUND)
+    pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
+    add_library(CURL::libcurl ALIAS PkgConfig::CURL)
+endif()
+
+find_package(SQLite3 QUIET)
+if(NOT SQLite3_FOUND AND PkgConfig_FOUND)
+    pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
+    add_library(SQLite3::SQLite3 ALIAS PkgConfig::SQLITE3)
+endif()
+
 find_package(nlohmann_json REQUIRED)
-# libwebsockets: vcpkg provides cmake config, system packages often only have pkg-config
+
 find_package(libwebsockets CONFIG QUIET)
-if(NOT libwebsockets_FOUND)
-    find_package(PkgConfig REQUIRED)
+if(NOT libwebsockets_FOUND AND PkgConfig_FOUND)
     pkg_check_modules(LWS REQUIRED IMPORTED_TARGET libwebsockets)
 endif()
+
 find_package(GIF REQUIRED)
 
 # --- header-only / small deps via FetchContent ---
@@ -63,14 +86,11 @@ target_include_directories(imgui_lib PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
 )
-# 32-bit wchar so ImGui can address emoji codepoints above U+FFFF.
-# without this, emoji ranges silently truncate and you get tofu rectangles.
+# 32-bit wchar so ImGui can address emoji codepoints above U+FFFF
 target_compile_definitions(imgui_lib PUBLIC IMGUI_USE_WCHAR32)
 target_link_libraries(imgui_lib PUBLIC SDL2::SDL2 OpenGL::GL)
 
 # --- main executable ---
-# no WIN32 subsystem for now so we get console output for debugging
-# flip to WIN32 for final release when we don't want the console window
 file(GLOB_RECURSE CONDUIT_SOURCES src/*.cpp)
 add_executable(conduit WIN32 ${CONDUIT_SOURCES})
 
@@ -102,19 +122,19 @@ else()
     message(FATAL_ERROR "libwebsockets not found")
 endif()
 
+# macOS framework includes for OpenGL
+if(APPLE)
+    target_compile_definitions(conduit PRIVATE GL_SILENCE_DEPRECATION)
+endif()
+
 # MSVC multi-config generators put output in Debug/ or Release/ subdirs
-# we need assets next to the exe regardless of config
-# copy assets into each possible output directory
 foreach(CONFIG_TYPE Debug Release RelWithDebInfo MinSizeRel)
     file(COPY assets/ DESTINATION ${CMAKE_BINARY_DIR}/${CONFIG_TYPE}/assets/)
     file(COPY config/ DESTINATION ${CMAKE_BINARY_DIR}/${CONFIG_TYPE}/config/)
 endforeach()
-# also copy to build root for single-config generators (makefiles, ninja)
 file(COPY assets/ DESTINATION ${CMAKE_BINARY_DIR}/assets/)
 file(COPY config/ DESTINATION ${CMAKE_BINARY_DIR}/config/)
 
-# tests (someday)
 if(CONDUIT_BUILD_TESTS)
     enable_testing()
-    # add_subdirectory(tests)
 endif()

@@ -75,14 +75,11 @@ jobs:
             nlohmann-json \
             create-dmg
 
-      - name: Setup vcpkg (Windows)
+      - name: Install dependencies (Windows)
         if: runner.os == 'Windows'
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: 'a42af01b72c28a8e1d7b48107b33e4f286a55ef6'
-          runVcpkgInstall: true
-        env:
-          VCPKG_DEFAULT_TRIPLET: x64-windows
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet x64-windows sdl2 curl sqlite3 giflib libwebsockets nlohmann-json
 
       # ---- Configure CMake ----
 
