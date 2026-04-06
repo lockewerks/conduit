@@ -1,5 +1,6 @@
 #include "app/Application.h"
 #include "app/KeychainStore.h"
+#include "app/BrowserCredentials.h"
 #include "util/Logger.h"
 #include "util/Platform.h"
 #include "util/TimeFormat.h"
@@ -321,13 +322,29 @@ void Application::connectToSlack() {
         if (stored) d_cookie = *stored;
     }
 
-    // no token? open browser for OAuth, user pastes the code back
-    // no token? ask the user to paste one from their browser.
-    // they can get it from slack web: F12 -> Console ->
-    //   JSON.parse(localStorage.localConfig_v2).teams[Object.keys(JSON.parse(localStorage.localConfig_v2).teams)[0]].token
-    // and the d cookie from Application tab -> Cookies -> .slack.com -> d
+    // no token? try to steal it from a Chromium browser before asking the user
     if (user_token.empty()) {
-        LOG_INFO("no token found, prompting user to paste one");
+        LOG_INFO("no token in config or keychain, scanning browsers...");
+        ui_.statusBar().setConnectionState("scanning browsers...");
+
+        auto creds = BrowserCredentials::scan();
+        if (!creds.empty()) {
+            auto& best = creds[0];
+            user_token = best.token;
+            d_cookie = best.cookie;
+            LOG_INFO("swiped credentials from " + best.browser_name);
+
+            // save to keychain so we don't have to do this again
+            KeychainStore::store("conduit", "user_token", user_token);
+            if (!d_cookie.empty()) {
+                KeychainStore::store("conduit", "d_cookie", d_cookie);
+            }
+        }
+    }
+
+    // still no token? fall back to manual paste
+    if (user_token.empty()) {
+        LOG_INFO("no token found anywhere, prompting user to paste one");
         ui_.statusBar().setConnectionState("paste your token");
         ui_.statusBar().setOrgName("Conduit");
         ui_.inputBar().setChannelName("paste xoxc- token");
