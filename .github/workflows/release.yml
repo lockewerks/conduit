@@ -79,7 +79,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # move vcpkg.json out of the way so vcpkg uses classic mode
+          if (Test-Path vcpkg.json) { Rename-Item vcpkg.json vcpkg.json.bak }
           & "$env:VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet x64-windows sdl2 curl sqlite3 giflib libwebsockets nlohmann-json
+          if (Test-Path vcpkg.json.bak) { Rename-Item vcpkg.json.bak vcpkg.json }
 
       # ---- Configure CMake ----
 

@@ -19,37 +19,54 @@ option(CONDUIT_USE_VCPKG "Use vcpkg for dependencies" ON)
 # system packages on Linux that don't ship cmake config files.
 find_package(PkgConfig QUIET)
 
-find_package(SDL2 QUIET)
-if(NOT SDL2_FOUND AND PkgConfig_FOUND)
-    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
-    add_library(SDL2::SDL2 ALIAS PkgConfig::SDL2)
-    # SDL2main doesn't exist via pkg-config, create a dummy
-    add_library(SDL2_main_dummy INTERFACE)
-    add_library(SDL2::SDL2main ALIAS SDL2_main_dummy)
-endif()
-
 find_package(OpenGL REQUIRED)
-
-find_package(CURL QUIET)
-if(NOT CURL_FOUND AND PkgConfig_FOUND)
-    pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
-    add_library(CURL::libcurl ALIAS PkgConfig::CURL)
-endif()
-
-find_package(SQLite3 QUIET)
-if(NOT SQLite3_FOUND AND PkgConfig_FOUND)
-    pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
-    add_library(SQLite3::SQLite3 ALIAS PkgConfig::SQLITE3)
-endif()
-
+find_package(GIF REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
-find_package(libwebsockets CONFIG QUIET)
-if(NOT libwebsockets_FOUND AND PkgConfig_FOUND)
-    pkg_check_modules(LWS REQUIRED IMPORTED_TARGET libwebsockets)
+# SDL2
+find_package(SDL2 QUIET)
+if(NOT TARGET SDL2::SDL2)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(SDL2_PC REQUIRED IMPORTED_TARGET sdl2)
+        add_library(SDL2::SDL2 ALIAS PkgConfig::SDL2_PC)
+        add_library(sdl2main_stub INTERFACE)
+        add_library(SDL2::SDL2main ALIAS sdl2main_stub)
+    else()
+        message(FATAL_ERROR "SDL2 not found")
+    endif()
 endif()
 
-find_package(GIF REQUIRED)
+# CURL
+find_package(CURL QUIET)
+if(NOT TARGET CURL::libcurl)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(CURL_PC REQUIRED IMPORTED_TARGET libcurl)
+        add_library(CURL::libcurl ALIAS PkgConfig::CURL_PC)
+    else()
+        message(FATAL_ERROR "CURL not found")
+    endif()
+endif()
+
+# SQLite3
+find_package(SQLite3 QUIET)
+if(NOT TARGET SQLite3::SQLite3)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(SQLITE3_PC REQUIRED IMPORTED_TARGET sqlite3)
+        add_library(SQLite3::SQLite3 ALIAS PkgConfig::SQLITE3_PC)
+    else()
+        message(FATAL_ERROR "SQLite3 not found")
+    endif()
+endif()
+
+# libwebsockets
+find_package(libwebsockets CONFIG QUIET)
+if(NOT TARGET websockets_shared AND NOT TARGET websockets)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LWS REQUIRED IMPORTED_TARGET libwebsockets)
+    else()
+        message(FATAL_ERROR "libwebsockets not found")
+    endif()
+endif()
 
 # --- header-only / small deps via FetchContent ---
 include(FetchContent)
