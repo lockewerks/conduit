@@ -97,6 +97,7 @@ void MessageCache::addReaction(const slack::ChannelId& channel, const slack::Tim
             for (auto& r : msg.reactions) {
                 if (r.emoji_name == reaction.emoji_name) {
                     r.count++;
+                    if (reaction.user_reacted) r.user_reacted = true;
                     for (auto& u : reaction.users) {
                         if (std::find(r.users.begin(), r.users.end(), u) == r.users.end()) {
                             r.users.push_back(u);

@@ -25,7 +25,7 @@ void Theme::apply() const {
     style.FramePadding = ImVec2(4.0f, 2.0f);
     style.ItemSpacing = ImVec2(4.0f, 2.0f);
     style.ItemInnerSpacing = ImVec2(4.0f, 2.0f);
-    style.ScrollbarSize = 8.0f; // thin scrollbar, out of the way
+    style.ScrollbarSize = 12.0f; // wide enough to grab without fighting the splitter
 
     auto& c = style.Colors;
 
@@ -47,10 +47,10 @@ void Theme::apply() const {
     c[ImGuiCol_TitleBgCollapsed] = bg_status;
     c[ImGuiCol_MenuBarBg] = bg_status;
 
-    c[ImGuiCol_ScrollbarBg] = {0, 0, 0, 0}; // invisible scrollbar track
-    c[ImGuiCol_ScrollbarGrab] = {0.20f, 0.20f, 0.20f, 0.5f};
-    c[ImGuiCol_ScrollbarGrabHovered] = {0.30f, 0.30f, 0.30f, 0.7f};
-    c[ImGuiCol_ScrollbarGrabActive] = {0.40f, 0.40f, 0.40f, 0.9f};
+    c[ImGuiCol_ScrollbarBg] = {0, 0, 0, 0};
+    c[ImGuiCol_ScrollbarGrab] = {0.18f, 0.18f, 0.22f, 0.3f}; // subtle until hovered
+    c[ImGuiCol_ScrollbarGrabHovered] = {0.35f, 0.35f, 0.40f, 0.8f};
+    c[ImGuiCol_ScrollbarGrabActive] = {0.45f, 0.45f, 0.50f, 1.0f};
 
     c[ImGuiCol_CheckMark] = text_bright;
     c[ImGuiCol_SliderGrab] = text_dim;

@@ -4,6 +4,7 @@
 #include "util/Platform.h"
 #include "util/TimeFormat.h"
 #include "render/TextRenderer.h"
+#include "render/EmojiMap.h"
 
 #include <imgui.h>
 #include <imgui_impl_sdl2.h>
@@ -66,6 +67,41 @@ bool Application::init() {
     registerCommands();
     setupTabCompletion();
     ui_.inputBar().setHistory(&input_history_);
+    ui_.inputBar().setTabComplete(&tab_complete_);
+
+    // autocomplete provider for @users, /commands, :emoji:, #channels
+    ui_.inputBar().setAutocompleteProvider([this](char trigger, const std::string& prefix)
+                                              -> std::vector<std::string> {
+        std::vector<std::string> results;
+        if (trigger == '@' && client_) {
+            for (auto& u : client_->userCache().getAll()) {
+                std::string name = u.effectiveName();
+                if (prefix.empty() || name.find(prefix) == 0)
+                    results.push_back(name);
+                if (results.size() >= 20) break;
+            }
+        } else if (trigger == '/' ) {
+            for (auto& cmd : commands_.commandNames()) {
+                if (prefix.empty() || cmd.find(prefix) == 0)
+                    results.push_back(cmd);
+            }
+        } else if (trigger == ':') {
+            auto& emap = conduit::render::getEmojiMap();
+            for (auto& [name, _] : emap) {
+                if (prefix.empty() || name.find(prefix) == 0)
+                    results.push_back(name);
+                if (results.size() >= 20) break;
+            }
+        } else if (trigger == '#' && client_) {
+            for (auto& ch : client_->getChannels()) {
+                if (prefix.empty() || ch.name.find(prefix) == 0)
+                    results.push_back(ch.name);
+                if (results.size() >= 20) break;
+            }
+        }
+        std::sort(results.begin(), results.end());
+        return results;
+    });
 
     connectToSlack();
 
@@ -117,12 +153,21 @@ bool Application::initSDL() {
         if (wf.is_open()) {
             wf >> start_x >> start_y >> start_w >> start_h >> maximized;
             if (wf.fail() || start_w < 200 || start_h < 200) {
-                // corrupt or nonsensical, ignore
                 start_x = SDL_WINDOWPOS_CENTERED;
                 start_y = SDL_WINDOWPOS_CENTERED;
                 start_w = 0;
                 start_h = 0;
                 maximized = false;
+            }
+            // pane widths are optional (added later) — don't let a read
+            // failure here poison the window state we already read
+            wf.clear();
+            float bl_w = 0, nl_w = 0;
+            wf >> bl_w >> nl_w;
+            if (!wf.fail() && bl_w >= 100 && nl_w >= 100) {
+                ui_.layout().buffer_list_width = bl_w;
+                ui_.layout().nick_list_width = nl_w;
+                panes_from_state_ = true;
             }
         }
     }
@@ -230,9 +275,12 @@ void Application::loadConfig() {
     config_.load(config_path);
     auto& cfg = config_.get();
 
-    // apply UI config
-    ui_.layout().buffer_list_width = cfg.ui.buffer_list_width;
-    ui_.layout().nick_list_width = cfg.ui.nick_list_width;
+    // apply UI config — pane widths from window.state take priority
+    // (panes_from_state_ is set in initSDL when window.state has widths)
+    if (!panes_from_state_) {
+        ui_.layout().buffer_list_width = cfg.ui.buffer_list_width;
+        ui_.layout().nick_list_width = cfg.ui.nick_list_width;
+    }
     ui_.layout().show_buffer_list = cfg.ui.show_buffer_list;
     ui_.layout().show_nick_list = cfg.ui.show_nick_list;
 
@@ -304,12 +352,31 @@ void Application::connectToSlack() {
     ui_.bufferView().setImageRenderer(&image_renderer_);
     ui_.bufferView().setGifRenderer(&gif_renderer_);
     ui_.bufferView().setAuthToken(user_token);
+    ui_.bufferView().setSelfUserId(client_->selfUserId());
+
+    // thread panel needs display name resolution and reply handling
+    ui_.threadPanel().setDisplayNameFn([this](const std::string& uid) -> std::string {
+        return client_ ? client_->displayName(uid) : uid;
+    });
+    ui_.threadPanel().setReplyCallback([this](const slack::ChannelId& ch,
+                                              const slack::Timestamp& ts,
+                                              const std::string& text) {
+        pool_->enqueue([this, ch, ts, text]() {
+            client_->sendMessage(ch, text, ts);
+        });
+    });
 
     // xoxc tokens need the d cookie on image/gif downloads too
     if (!d_cookie.empty()) {
         image_renderer_.setCookie(d_cookie);
         gif_renderer_.setCookie(d_cookie);
+        emoji_renderer_.setCookie(d_cookie);
     }
+    emoji_renderer_.setAuthToken(user_token);
+    emoji_renderer_.setThreadPool(pool_.get());
+
+    // pass emoji renderer to UI components
+    ui_.bufferView().setEmojiRenderer(&emoji_renderer_);
 
     ui_.statusBar().setOrgName(org_name);
     ui_.statusBar().setConnectionState("connecting...");
@@ -318,6 +385,11 @@ void Application::connectToSlack() {
         if (client_->connect()) {
             needs_channel_sync_ = true;
             LOG_INFO("connected to " + name);
+            // fetch custom workspace emoji in background
+            auto custom = client_->getCustomEmoji();
+            if (!custom.empty()) {
+                emoji_renderer_.setCustomEmoji(custom);
+            }
         } else {
             LOG_ERROR("failed to connect to " + name);
         }
@@ -354,11 +426,43 @@ void Application::registerCommands() {
     });
 
     commands_.registerCommand("msg", "Send a DM: /msg @user message", [this](const input::ParsedCommand& cmd) {
-        if (cmd.argv.size() < 2 || !client_) return;
-        // first arg is user, rest is message
-        std::string text = cmd.args.substr(cmd.args.find(' ') + 1);
-        LOG_INFO("DM to " + cmd.argv[0] + ": " + text);
-        // would need to resolve user to DM channel, then send
+        if (cmd.argv.empty() || !client_) return;
+        std::string target = cmd.argv[0];
+        if (target[0] == '@') target = target.substr(1);
+
+        // find the user
+        std::string user_id;
+        for (auto& u : client_->userCache().getAll()) {
+            if (u.effectiveName() == target || u.display_name == target || u.real_name == target) {
+                user_id = u.id;
+                break;
+            }
+        }
+        if (user_id.empty()) {
+            LOG_WARN("user not found: " + target);
+            return;
+        }
+
+        // extract message text (everything after the username)
+        std::string text;
+        auto space_pos = cmd.args.find(' ');
+        if (space_pos != std::string::npos) text = cmd.args.substr(space_pos + 1);
+
+        pool_->enqueue([this, user_id, text]() {
+            auto ch_id = client_->openDM(user_id);
+            if (!ch_id) {
+                LOG_ERROR("failed to open DM with " + user_id);
+                return;
+            }
+            if (!text.empty()) {
+                client_->sendMessage(*ch_id, text);
+            }
+            {
+                std::lock_guard<std::mutex> lock(pending_switch_mutex_);
+                pending_switch_channel_ = *ch_id;
+            }
+            needs_channel_sync_ = true;
+        });
     });
 
     commands_.registerCommand("topic", "Set channel topic", [this](const input::ParsedCommand& cmd) {
@@ -470,28 +574,47 @@ void Application::registerCommands() {
         if (cmd.argv.empty() || !client_) return;
         std::string target = cmd.argv[0];
         if (target[0] == '@') target = target.substr(1);
+
         // find the user by name
+        std::string user_id;
         for (auto& u : client_->userCache().getAll()) {
             if (u.effectiveName() == target || u.display_name == target || u.real_name == target) {
-                // find the DM channel for this user
-                for (auto& ch : client_->channelCache().getJoined()) {
-                    if (ch.type == slack::ChannelType::DirectMessage && ch.dm_user_id == u.id) {
-                        // switch to this DM
-                        auto& entries = ui_.bufferList().entries();
-                        for (int i = 0; i < (int)entries.size(); i++) {
-                            if (entries[i].channel_id == ch.id) {
-                                ui_.bufferList().select(i);
-                                switchToBuffer(i);
-                                return;
-                            }
-                        }
-                    }
-                }
-                LOG_WARN("no DM channel found for " + target);
-                return;
+                user_id = u.id;
+                break;
             }
         }
-        LOG_WARN("user not found: " + target);
+        if (user_id.empty()) {
+            LOG_WARN("user not found: " + target);
+            return;
+        }
+
+        // check if we already have a DM channel open
+        for (auto& ch : client_->channelCache().getJoined()) {
+            if (ch.type == slack::ChannelType::DirectMessage && ch.dm_user_id == user_id) {
+                auto& entries = ui_.bufferList().entries();
+                for (int i = 0; i < (int)entries.size(); i++) {
+                    if (entries[i].channel_id == ch.id) {
+                        ui_.bufferList().select(i);
+                        switchToBuffer(i);
+                        return;
+                    }
+                }
+            }
+        }
+
+        // no existing DM, open one via the API
+        pool_->enqueue([this, user_id]() {
+            auto ch_id = client_->openDM(user_id);
+            if (!ch_id) {
+                LOG_ERROR("failed to open DM");
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(pending_switch_mutex_);
+                pending_switch_channel_ = *ch_id;
+            }
+            needs_channel_sync_ = true;
+        });
     });
 
     commands_.registerCommand("reply", "Reply in thread: /reply text", [this](const input::ParsedCommand& cmd) {
@@ -877,6 +1000,35 @@ void Application::run() {
         if (needs_channel_sync_ && client_ && client_->isConnected()) {
             syncBufferList();
             needs_channel_sync_ = false;
+
+            // if a DM was opened in the background, switch to it now
+            {
+                std::lock_guard<std::mutex> lock(pending_switch_mutex_);
+                if (!pending_switch_channel_.empty()) {
+                    bool found = false;
+                    auto& entries = ui_.bufferList().entries();
+                    for (int i = 0; i < (int)entries.size(); i++) {
+                        if (entries[i].channel_id == pending_switch_channel_) {
+                            ui_.bufferList().select(i);
+                            switchToBuffer(i);
+                            last_buf_idx = i;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (found) {
+                        pending_switch_channel_.clear();
+                        pending_switch_retries_ = 0;
+                    } else if (++pending_switch_retries_ > 5) {
+                        LOG_WARN("gave up waiting for DM channel " + pending_switch_channel_);
+                        pending_switch_channel_.clear();
+                        pending_switch_retries_ = 0;
+                    } else {
+                        // channel not in buffer list yet, force another sync next frame
+                        needs_channel_sync_ = true;
+                    }
+                }
+            } // lock_guard
         }
         if (needs_message_sync_ && client_ && client_->isConnected() && !active_channel_.empty()) {
             syncBufferView();
@@ -893,6 +1045,7 @@ void Application::run() {
 
         // push any decoded images/gifs to the GPU (GL calls must happen on main thread)
         image_renderer_.uploadPending();
+        emoji_renderer_.uploadPending();
         gif_renderer_.uploadPending();
 
         // tick GIF animations so they don't just sit there frozen
@@ -947,6 +1100,96 @@ void Application::run() {
             switchToBuffer(cur_buf);
         }
 
+        // right-click context menu actions on messages
+        {
+            auto ctx = ui_.bufferView().lastContextAction();
+            if (ctx.type != ui::BufferView::ContextAction::None && client_) {
+                switch (ctx.type) {
+                case ui::BufferView::ContextAction::Copy:
+                    SDL_SetClipboardText(ctx.text.c_str());
+                    break;
+
+                case ui::BufferView::ContextAction::Reply: {
+                    std::string ts = ctx.ts;
+                    ui_.threadPanel().open(active_channel_, ts);
+                    pool_->enqueue([this, ch = active_channel_, ts]() {
+                        auto replies = client_->getThreadReplies(ch, ts);
+                        ui_.threadPanel().setMessages(replies);
+                    });
+                    break;
+                }
+
+                case ui::BufferView::ContextAction::React: {
+                    // open the full emoji picker anchored near the input bar
+                    std::string ts = ctx.ts;
+                    ImVec2 vp_size = ImGui::GetMainViewport()->Size;
+                    float anchor_x = vp_size.x * 0.3f;
+                    float anchor_y = vp_size.y - ui_.layout().input_bar_height - ui_.layout().status_bar_height;
+                    ui_.emojiPicker().setSelectCallback([this, ch = active_channel_, ts](const std::string& emoji) {
+                        pool_->enqueue([this, ch, ts, emoji]() {
+                            client_->addReaction(ch, ts, emoji);
+                        });
+                    });
+                    ui_.emojiPicker().open(anchor_x, anchor_y);
+                    break;
+                }
+
+                case ui::BufferView::ContextAction::QuickReact: {
+                    std::string ts = ctx.ts;
+                    std::string emoji = ctx.emoji;
+                    pool_->enqueue([this, ch = active_channel_, ts, emoji]() {
+                        client_->addReaction(ch, ts, emoji);
+                    });
+                    break;
+                }
+
+                case ui::BufferView::ContextAction::Edit: {
+                    editing_ts_ = ctx.ts;
+                    ui_.inputBar().setText(ctx.text);
+                    break;
+                }
+
+                case ui::BufferView::ContextAction::Delete: {
+                    std::string ts = ctx.ts;
+                    pool_->enqueue([this, ch = active_channel_, ts]() {
+                        client_->deleteMessage(ch, ts);
+                    });
+                    break;
+                }
+
+                default: break;
+                }
+            }
+            ui_.bufferView().clearContextAction();
+        }
+
+        // nick list click: open DM with that user
+        {
+            std::string nick = ui_.nickList().lastClickedNick();
+            if (!nick.empty() && client_) {
+                // resolve nick to user ID
+                std::string user_id;
+                for (auto& u : client_->userCache().getAll()) {
+                    if (u.effectiveName() == nick || u.display_name == nick) {
+                        user_id = u.id;
+                        break;
+                    }
+                }
+                if (!user_id.empty()) {
+                    pool_->enqueue([this, user_id]() {
+                        auto ch_id = client_->openDM(user_id);
+                        if (!ch_id) return;
+                        {
+                            std::lock_guard<std::mutex> lock(pending_switch_mutex_);
+                            pending_switch_channel_ = *ch_id;
+                        }
+                        needs_channel_sync_ = true;
+                    });
+                }
+            }
+            ui_.nickList().clearClickedNick();
+        }
+
         // reaction badge clicks: toggle add/remove on the Slack API
         {
             auto rc = ui_.bufferView().lastReactionClick();
@@ -982,6 +1225,19 @@ void Application::run() {
                 });
             }
             ui_.bufferView().clearReactionClick();
+        }
+
+        // thread click -> open thread panel for that message
+        {
+            auto tc = ui_.bufferView().lastThreadClick();
+            if (tc.clicked && client_ && !active_channel_.empty()) {
+                ui_.threadPanel().open(active_channel_, tc.thread_ts);
+                pool_->enqueue([this, ch = active_channel_, ts = tc.thread_ts]() {
+                    auto replies = client_->getThreadReplies(ch, ts);
+                    ui_.threadPanel().setMessages(replies);
+                });
+            }
+            ui_.bufferView().clearThreadClick();
         }
 
         // image click -> open full-size preview
@@ -1302,6 +1558,16 @@ void Application::handleInputSubmit(const std::string& text) {
         return;
     }
 
+    // if we're in edit mode, send it as an edit to the specific message
+    if (!editing_ts_.empty()) {
+        std::string ts = editing_ts_;
+        editing_ts_.clear();
+        pool_->enqueue([this, ch = active_channel_, ts, text]() {
+            client_->editMessage(ch, ts, text);
+        });
+        return;
+    }
+
     // save to input history
     input_history_.add(active_channel_, text);
 
@@ -1319,9 +1585,8 @@ void Application::handleInputSubmit(const std::string& text) {
         return;
     }
 
-    // just send it. the websocket delivers our own message back fast enough
-    // that we don't need optimistic insert anymore. no more dupes.
-    pool_->enqueue([this, channel = active_channel_, msg = text]() {
+    std::string processed = convertMentions(text);
+    pool_->enqueue([this, channel = active_channel_, msg = processed]() {
         if (!client_->sendMessage(channel, msg)) {
             LOG_ERROR("failed to send message");
         }
@@ -1338,23 +1603,36 @@ void Application::processSlackEvents() {
         switch (event.type) {
         case slack::SlackEvent::Type::MessageNew:
             if (event.message) {
-                msg_cache_->store(event.channel, *event.message);
-                if (event.channel == active_channel_) {
-                    needs_message_sync_ = true;
+                // thread-only replies should not appear in the main channel.
+                // a message is a thread reply when thread_ts is set and differs
+                // from the message's own ts. broadcast replies (subtype
+                // "thread_broadcast") DO belong in the main channel.
+                bool is_thread_reply = !event.message->thread_ts.empty()
+                                       && event.message->thread_ts != event.message->ts;
+                bool is_broadcast = (event.message->subtype == "thread_broadcast")
+                                     || event.message->reply_broadcast;
+
+                if (!is_thread_reply || is_broadcast) {
+                    msg_cache_->store(event.channel, *event.message);
+                    if (event.channel == active_channel_) {
+                        needs_message_sync_ = true;
+                    }
+                    // update unread count for other channels
+                    if (event.channel != active_channel_) {
+                        client_->channelCache().updateUnreadCount(
+                            event.channel,
+                            client_->channelCache().get(event.channel)
+                                .value_or(slack::Channel{}).unread_count + 1);
+                        needs_channel_sync_ = true;
+                    }
                 }
-                // update unread count for other channels
-                if (event.channel != active_channel_) {
-                    client_->channelCache().updateUnreadCount(
-                        event.channel,
-                        client_->channelCache().get(event.channel)
-                            .value_or(slack::Channel{}).unread_count + 1);
-                    needs_channel_sync_ = true;
-                }
-                // feed thread panel if it's watching this thread
+
+                // feed thread panel regardless — it wants all thread messages
                 if (ui_.threadPanel().isOpen() && event.message->thread_ts == ui_.threadPanel().parentTs()) {
                     ui_.threadPanel().addMessage(*event.message);
                 }
-                // desktop notification for mentions and DMs
+
+                // desktop notification for mentions and DMs (even in threads)
                 if (event.channel != active_channel_) {
                     bool is_mention = event.message->text.find("<@" + client_->selfUserId() + ">") != std::string::npos;
                     auto ch_info = client_->channelCache().get(event.channel);
@@ -1460,38 +1738,89 @@ void Application::syncBufferList() {
     std::vector<ui::BufferEntry> entries;
 
     // org header
-    entries.push_back({client_->teamName(), false, false, 0, false, true, ""});
+    entries.push_back({client_->teamName(), false, false, 0, false, true, false, ""});
 
-    bool found_active = false;
+    // separate channels, DMs, and app/bot conversations
+    std::vector<slack::Channel> chan_list, dm_list, app_list;
     for (auto& ch : channels) {
         bool is_dm = (ch.type == slack::ChannelType::DirectMessage ||
                       ch.type == slack::ChannelType::MultiPartyDM);
-
-        std::string display = is_dm ? ch.name : ch.name;
-        if (is_dm && !ch.dm_user_id.empty()) {
-            display = client_->displayName(ch.dm_user_id);
+        if (!is_dm) {
+            chan_list.push_back(ch);
+            continue;
         }
+        // check if the DM counterpart is a bot/app
+        bool is_bot_dm = false;
+        if (!ch.dm_user_id.empty()) {
+            auto user = client_->userCache().get(ch.dm_user_id);
+            if (user && user->is_bot) is_bot_dm = true;
+            // slackbot has a special user ID "USLACKBOT"
+            if (ch.dm_user_id == "USLACKBOT") is_bot_dm = true;
+        }
+        if (is_bot_dm) app_list.push_back(ch);
+        else dm_list.push_back(ch);
+    }
 
+    // Channels section
+    entries.push_back({"Channels", false, false, 0, false, false, true, ""});
+    bool found_active = false;
+    for (auto& ch : chan_list) {
         bool is_active = (ch.id == active_channel_);
         if (is_active) found_active = true;
-
         entries.push_back({
-            is_dm ? "@" + display : "#" + display,
-            is_active,
-            ch.has_unreads,
-            ch.unread_count,
-            is_dm,
-            false,
-            ch.id
+            "#" + ch.name, is_active, ch.has_unreads, ch.unread_count,
+            false, false, false, ch.id
         });
+    }
+
+    // Direct Messages section
+    entries.push_back({"Direct Messages", false, false, 0, false, false, true, ""});
+    for (auto& ch : dm_list) {
+        std::string display = ch.name;
+        if (!ch.dm_user_id.empty()) {
+            display = client_->displayName(ch.dm_user_id);
+            // mark self-DM
+            if (ch.dm_user_id == client_->selfUserId()) {
+                display += " (you)";
+            }
+        }
+        bool is_active = (ch.id == active_channel_);
+        if (is_active) found_active = true;
+        entries.push_back({
+            "@" + display, is_active, ch.has_unreads, ch.unread_count,
+            true, false, false, ch.id
+        });
+    }
+
+    // Apps section (bot/app conversations)
+    if (!app_list.empty()) {
+        entries.push_back({"Apps", false, false, 0, false, false, true, ""});
+        for (auto& ch : app_list) {
+            std::string display = ch.name;
+            if (!ch.dm_user_id.empty()) {
+                display = client_->displayName(ch.dm_user_id);
+            }
+            bool is_active = (ch.id == active_channel_);
+            if (is_active) found_active = true;
+            entries.push_back({
+                "@" + display, is_active, ch.has_unreads, ch.unread_count,
+                true, false, false, ch.id
+            });
+        }
     }
 
     ui_.bufferList().setEntries(entries);
 
-    // if we don't have an active channel yet, pick the first real one
-    if (!found_active && entries.size() > 1) {
-        ui_.bufferList().select(1); // skip the org header
-        switchToBuffer(1);
+    // if we don't have an active channel yet, pick the first real channel
+    if (!found_active) {
+        for (int i = 0; i < (int)entries.size(); i++) {
+            if (!entries[i].is_separator && !entries[i].is_section_header
+                && !entries[i].channel_id.empty()) {
+                ui_.bufferList().select(i);
+                switchToBuffer(i);
+                break;
+            }
+        }
     }
 }
 
@@ -1517,7 +1846,27 @@ void Application::syncBufferView() {
         vm.timestamp = util::formatTime(msg.ts);
         vm.nick = client_->displayName(msg.user);
         vm.user_id = msg.user;
+
+        // resolve <@USER_ID> mentions to <@USER_ID|displayname> so the
+        // mrkdwn parser can show real names instead of raw IDs
         vm.text = msg.text;
+        {
+            size_t pos = 0;
+            while ((pos = vm.text.find("<@", pos)) != std::string::npos) {
+                size_t end = vm.text.find('>', pos);
+                if (end == std::string::npos) break;
+                std::string inner = vm.text.substr(pos + 2, end - pos - 2);
+                if (inner.find('|') == std::string::npos) {
+                    // no display name yet — resolve it
+                    std::string name = client_->displayName(inner);
+                    if (name != inner) {
+                        vm.text.replace(pos + 2, inner.size(), inner + "|" + name);
+                        end = vm.text.find('>', pos); // recalc
+                    }
+                }
+                pos = end + 1;
+            }
+        }
         vm.subtype = msg.subtype;
         vm.reactions = msg.reactions;
         vm.files = msg.files;
@@ -1525,6 +1874,18 @@ void Application::syncBufferView() {
         vm.reply_count = msg.reply_count;
         vm.is_edited = msg.is_edited;
         vm.ts = msg.ts;
+
+        // for broadcast replies, find the parent message to show as a quote
+        if ((msg.subtype == "thread_broadcast" || msg.reply_broadcast) &&
+            !msg.thread_ts.empty() && msg.thread_ts != msg.ts) {
+            for (auto& parent : messages) {
+                if (parent.ts == msg.thread_ts) {
+                    vm.reply_parent_nick = client_->displayName(parent.user);
+                    vm.reply_parent_text = parent.text;
+                    break;
+                }
+            }
+        }
 
         // queue image/gif downloads so they're ready by the time we render
         if (!msg.files.empty()) {
@@ -1619,6 +1980,38 @@ void Application::switchToBuffer(int index) {
     });
 }
 
+// convert @displayname mentions to <@USER_ID> format so Slack treats them
+// as real mentions with notifications and highlights
+std::string Application::convertMentions(const std::string& text) {
+    if (!client_ || text.find('@') == std::string::npos) return text;
+
+    std::string result = text;
+    // sort users by name length descending so "john smith" matches before "john"
+    auto users = client_->userCache().getAll();
+    std::sort(users.begin(), users.end(), [](const slack::User& a, const slack::User& b) {
+        return a.effectiveName().size() > b.effectiveName().size();
+    });
+
+    for (auto& u : users) {
+        std::string at_name = "@" + u.effectiveName();
+        size_t pos = 0;
+        while ((pos = result.find(at_name, pos)) != std::string::npos) {
+            bool at_start = (pos == 0 || result[pos - 1] == ' ' || result[pos - 1] == '\n');
+            size_t end = pos + at_name.size();
+            bool at_end = (end >= result.size() || result[end] == ' ' ||
+                           result[end] == '\n' || result[end] == ',' || result[end] == '.');
+            if (at_start && at_end) {
+                std::string mention = "<@" + u.id + ">";
+                result.replace(pos, at_name.size(), mention);
+                pos += mention.size();
+            } else {
+                pos += at_name.size();
+            }
+        }
+    }
+    return result;
+}
+
 // ---- Shutdown ----
 
 void Application::shutdown() {
@@ -1641,7 +2034,9 @@ void Application::shutdown() {
                 SDL_GetWindowPosition(window_, &wx, &wy);
                 SDL_GetWindowSize(window_, &ww, &wh);
             }
-            wf << wx << " " << wy << " " << ww << " " << wh << " " << is_max;
+            wf << wx << " " << wy << " " << ww << " " << wh << " " << is_max
+               << " " << ui_.layout().buffer_list_width
+               << " " << ui_.layout().nick_list_width;
         }
     }
 

@@ -92,6 +92,7 @@ bool SlackClient::connect() {
                 r.emoji_name = msg.value("reaction", "");
                 r.count = 1;
                 r.users = {e.user};
+                r.user_reacted = (e.user == auth_info_.user_id);
                 e.reaction = r;
                 event_queue_.push(std::move(e));
             } else if (type == "channel_marked") {
@@ -240,6 +241,56 @@ bool SlackClient::setTopic(const ChannelId& channel, const std::string& topic) {
     return false;
 }
 
+std::optional<ChannelId> SlackClient::openDM(const UserId& user_id) {
+    rate_limiter_.recordCall("conversations.open");
+    LOG_INFO("opening DM with user: " + user_id);
+
+    // check if we already have a DM channel open for this user
+    for (auto& ch : channel_cache_.getAll()) {
+        if (ch.type == ChannelType::DirectMessage && ch.dm_user_id == user_id && ch.is_member) {
+            LOG_INFO("found existing DM channel: " + ch.id);
+            return ch.id;
+        }
+    }
+
+    // try form-encoded first (more reliable with xoxc tokens), then JSON
+    auto result = api_->postForm("conversations.open",
+                                  "users=" + user_id + "&return_im=true");
+    if (!result || !result->value("ok", false)) {
+        std::string err = result ? result->value("error", "unknown") : "no response";
+        LOG_WARN("conversations.open form failed (" + err + "), trying JSON");
+        result = api_->post("conversations.open", {{"users", user_id}, {"return_im", true}});
+    }
+
+    if (!result) {
+        LOG_ERROR("conversations.open returned no result for user: " + user_id);
+        return std::nullopt;
+    }
+    if (!result->value("ok", false)) {
+        LOG_ERROR("conversations.open failed: " + result->value("error", "unknown"));
+        return std::nullopt;
+    }
+
+    if (result->contains("channel") && (*result)["channel"].contains("id")) {
+        ChannelId ch_id = (*result)["channel"]["id"].get<std::string>();
+        LOG_INFO("opened DM channel: " + ch_id);
+
+        // make sure it's in our channel cache with is_member=true
+        Channel ch;
+        ch.id = ch_id;
+        ch.type = ChannelType::DirectMessage;
+        ch.dm_user_id = user_id;
+        ch.name = displayName(user_id);
+        ch.is_member = true;
+        channel_cache_.upsert(ch);
+
+        return ch_id;
+    }
+
+    LOG_ERROR("conversations.open response missing channel.id");
+    return std::nullopt;
+}
+
 // message operations
 std::vector<Message> SlackClient::getHistory(const ChannelId& channel, int limit,
                                               const std::optional<Timestamp>& before) {
@@ -340,13 +391,30 @@ std::vector<Message> SlackClient::getThreadReplies(const ChannelId& channel,
 }
 
 bool SlackClient::sendMessage(const ChannelId& channel, const std::string& text,
-                               const std::optional<Timestamp>& thread_ts) {
+                               const std::optional<Timestamp>& thread_ts,
+                               bool reply_broadcast) {
     nlohmann::json body = {{"channel", channel}, {"text", text}};
-    if (thread_ts) body["thread_ts"] = *thread_ts;
+    if (thread_ts) {
+        body["thread_ts"] = *thread_ts;
+        if (reply_broadcast) {
+            body["reply_broadcast"] = true;
+        }
+    }
 
     rate_limiter_.recordCall("chat.postMessage");
     auto result = api_->post("chat.postMessage", body);
-    return result && result->value("ok", false);
+    if (!result) {
+        LOG_ERROR("sendMessage: no response");
+        return false;
+    }
+    if (!result->value("ok", false)) {
+        LOG_ERROR("sendMessage failed: " + result->value("error", "unknown"));
+        return false;
+    }
+    if (thread_ts && reply_broadcast) {
+        LOG_INFO("sent broadcast reply to thread " + *thread_ts);
+    }
+    return true;
 }
 
 bool SlackClient::editMessage(const ChannelId& channel, const Timestamp& ts,
@@ -441,6 +509,24 @@ bool SlackClient::pinMessage(const ChannelId& channel, const Timestamp& ts) {
 bool SlackClient::unpinMessage(const ChannelId& channel, const Timestamp& ts) {
     auto result = api_->post("pins.remove", {{"channel", channel}, {"timestamp", ts}});
     return result && result->value("ok", false);
+}
+
+std::unordered_map<std::string, std::string> SlackClient::getCustomEmoji() {
+    rate_limiter_.recordCall("emoji.list");
+    auto result = api_->get("emoji.list");
+    std::unordered_map<std::string, std::string> emoji;
+    if (!result || !result->value("ok", false)) return emoji;
+
+    if (result->contains("emoji") && (*result)["emoji"].is_object()) {
+        for (auto& [name, url] : (*result)["emoji"].items()) {
+            std::string url_str = url.get<std::string>();
+            // skip aliases (they start with "alias:")
+            if (url_str.find("alias:") == 0) continue;
+            emoji[name] = url_str;
+        }
+    }
+    LOG_INFO("fetched " + std::to_string(emoji.size()) + " custom emoji");
+    return emoji;
 }
 
 void SlackClient::sendTyping(const ChannelId& channel) {

@@ -1,6 +1,7 @@
 #include "ui/BufferView.h"
 #include "render/TextRenderer.h"
 #include "render/ReactionBadge.h"
+#include "render/EmojiMap.h"
 #include <imgui.h>
 #include <algorithm>
 
@@ -88,6 +89,25 @@ void BufferView::render(float x, float y, float width, float height, const Theme
         ImGui::PopStyleColor();
         ImGui::SameLine(0, 0);
 
+        // quoted parent message for broadcast replies
+        if (!msg.reply_parent_nick.empty()) {
+            float qx = ImGui::GetCursorPosX();
+            ImVec2 qpos = ImGui::GetCursorScreenPos();
+            // accent bar
+            dl->AddRectFilled(qpos, {qpos.x + 2.0f, qpos.y + ImGui::GetTextLineHeightWithSpacing()},
+                               ImGui::ColorConvertFloat4ToU32({0.35f, 0.55f, 0.85f, 0.8f}));
+            ImGui::SetCursorPosX(qx + 6.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.45f, 0.60f, 0.85f, 1.0f});
+            ImGui::TextUnformatted(msg.reply_parent_nick.c_str());
+            ImGui::PopStyleColor();
+            ImGui::SameLine(0, 4.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.50f, 0.52f, 0.55f, 1.0f});
+            std::string preview = msg.reply_parent_text;
+            if (preview.size() > 80) preview = preview.substr(0, 77) + "...";
+            ImGui::TextUnformatted(preview.c_str());
+            ImGui::PopStyleColor();
+        }
+
         // message text with mrkdwn — failed sends get the red treatment
         float text_start = ImGui::GetCursorPosX();
         float text_avail = width - text_start - pad;
@@ -156,24 +176,29 @@ void BufferView::render(float x, float y, float width, float height, const Theme
             }
         }
 
-        // thread replies - clickable so people actually find threads
+        // thread replies - clickable to open thread panel
         if (msg.reply_count > 0) {
             ImGui::SetCursorPosX(text_start);
-            std::string thr = "[" + std::to_string(msg.reply_count) +
-                               (msg.reply_count == 1 ? " reply]" : " replies]");
+            std::string thr = "\xf0\x9f\x92\xac " + std::to_string(msg.reply_count) +
+                               (msg.reply_count == 1 ? " reply" : " replies");
             ImVec2 thr_size = ImGui::CalcTextSize(thr.c_str());
             ImVec2 thr_pos = ImGui::GetCursorScreenPos();
             bool thr_hovered = ImGui::IsMouseHoveringRect(thr_pos, {thr_pos.x + thr_size.x, thr_pos.y + thr_size.y});
-            ImGui::PushStyleColor(ImGuiCol_Text, thr_hovered ? theme.url_color : theme.text_dim);
+            ImGui::PushStyleColor(ImGuiCol_Text, thr_hovered ? theme.url_color : ImVec4{0.35f, 0.55f, 0.85f, 1.0f});
             ImGui::TextUnformatted(thr.c_str());
             ImGui::PopStyleColor();
-            if (thr_hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            if (thr_hovered) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                if (ImGui::IsMouseClicked(0)) {
+                    last_thread_click_ = {true, msg.ts};
+                }
+            }
         }
 
         // reactions
         if (!msg.reactions.empty()) {
             ImGui::SetCursorPosX(text_start);
-            auto click = render::ReactionBadge::render(msg.reactions, theme, text_avail);
+            auto click = render::ReactionBadge::render(msg.reactions, theme, text_avail, emoji_renderer_);
             if (click.clicked) {
                 last_reaction_click_ = {true, click.emoji_name, msg.ts};
             }
@@ -204,14 +229,82 @@ void BufferView::render(float x, float y, float width, float height, const Theme
             }
         }
 
-        // hover highlight - subtle enough you won't feel like a website
+        // hover highlight + floating action bar
         if (ImGui::IsWindowHovered()) {
             ImVec2 mouse = ImGui::GetMousePos();
-            if (mouse.y >= msg_start_y && mouse.y < msg_end_y && (int)mi != selected_index_) {
+            bool msg_hovered = (mouse.y >= msg_start_y && mouse.y < msg_end_y);
+
+            if (msg_hovered && (int)mi != selected_index_) {
                 dl->AddRectFilled(
                     {win_pos.x, msg_start_y},
                     {win_pos.x + width, msg_end_y},
                     ImGui::ColorConvertFloat4ToU32({0.08f, 0.08f, 0.12f, 0.5f}));
+            }
+
+            // floating action bar at top-right of hovered message
+            if (msg_hovered && !is_system) {
+                ImDrawList* fg = ImGui::GetForegroundDrawList();
+                float bar_h = ImGui::GetTextLineHeightWithSpacing() + 6.0f;
+                float pad = 6.0f;
+
+                // measure button labels
+                const char* react_label = "React";
+                const char* reply_label = "Reply";
+                const char* more_label = "...";
+                ImVec2 react_sz = ImGui::CalcTextSize(react_label);
+                ImVec2 reply_sz = ImGui::CalcTextSize(reply_label);
+                ImVec2 more_sz = ImGui::CalcTextSize(more_label);
+                float react_w = react_sz.x + pad * 2;
+                float reply_w = reply_sz.x + pad * 2;
+                float more_w = more_sz.x + pad * 2;
+                float gap = 2.0f;
+                float bar_w = react_w + reply_w + more_w + gap * 2 + pad * 2;
+
+                float bar_x = win_pos.x + width - bar_w - 16.0f;
+                float bar_y = msg_start_y - bar_h * 0.5f;
+                if (bar_y < win_pos.y) bar_y = msg_start_y;
+
+                // bar background with border
+                fg->AddRectFilled(
+                    {bar_x, bar_y}, {bar_x + bar_w, bar_y + bar_h},
+                    ImGui::ColorConvertFloat4ToU32({0.12f, 0.12f, 0.16f, 0.97f}), 5.0f);
+                fg->AddRect(
+                    {bar_x, bar_y}, {bar_x + bar_w, bar_y + bar_h},
+                    ImGui::ColorConvertFloat4ToU32({0.30f, 0.30f, 0.36f, 1.0f}), 5.0f);
+
+                ImU32 text_normal = ImGui::ColorConvertFloat4ToU32({0.72f, 0.75f, 0.80f, 1.0f});
+                ImU32 text_bright = ImGui::ColorConvertFloat4ToU32({0.90f, 0.92f, 0.95f, 1.0f});
+                ImU32 bg_hover = ImGui::ColorConvertFloat4ToU32({0.22f, 0.24f, 0.32f, 1.0f});
+                float text_y = bar_y + (bar_h - react_sz.y) * 0.5f;
+                float bx = bar_x + pad;
+
+                // helper lambda for each button
+                auto drawBtn = [&](const char* label, ImVec2 sz, float w,
+                                   auto on_click) {
+                    bool hov = (mouse.x >= bx && mouse.x < bx + w &&
+                                mouse.y >= bar_y && mouse.y < bar_y + bar_h);
+                    if (hov) {
+                        fg->AddRectFilled({bx, bar_y + 2}, {bx + w, bar_y + bar_h - 2},
+                                           bg_hover, 3.0f);
+                        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                        if (ImGui::IsMouseClicked(0)) on_click();
+                    }
+                    fg->AddText({bx + pad, text_y}, hov ? text_bright : text_normal, label);
+                    bx += w + gap;
+                };
+
+                drawBtn(react_label, react_sz, react_w, [&]() {
+                    last_context_action_ = {ContextAction::React, msg.ts, msg.text};
+                });
+                drawBtn(reply_label, reply_sz, reply_w, [&]() {
+                    last_context_action_ = {ContextAction::Reply, msg.ts, msg.text};
+                });
+                drawBtn(more_label, more_sz, more_w, [&]() {
+                    context_msg_ts_ = msg.ts;
+                    context_msg_user_ = msg.user_id;
+                    context_msg_text_ = msg.text;
+                    ImGui::OpenPopup("##msg_context");
+                });
             }
         }
 
@@ -227,23 +320,77 @@ void BufferView::render(float x, float y, float width, float height, const Theme
 
     // message context menu popup - rendered once, not per-message
     if (ImGui::BeginPopup("##msg_context")) {
-        if (ImGui::MenuItem("Copy")) {
+        // quick reaction row: top 6 emoji + "more" button
+        {
+            static const struct { const char* name; const char* fallback; } quick_emoji[] = {
+                {"thumbsup",      "+1"},
+                {"heart",         "<3"},
+                {"joy",           "XD"},
+                {"eyes",          "OO"},
+                {"fire",          "**"},
+                {"raised_hands",  "!!"},
+            };
+
+            auto& emap = conduit::render::getEmojiMap();
+            float btn_size = ImGui::GetTextLineHeightWithSpacing() + 8.0f;
+
+            for (int i = 0; i < 6; i++) {
+                if (i > 0) ImGui::SameLine(0, 2);
+
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0.15f, 0.15f, 0.20f, 1.0f});
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{0.25f, 0.25f, 0.35f, 1.0f});
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4{0.30f, 0.30f, 0.45f, 1.0f});
+
+                std::string btn_id = "##qr_" + std::to_string(i);
+                auto it = emap.find(quick_emoji[i].name);
+                std::string label = (it != emap.end()) ? it->second : quick_emoji[i].fallback;
+                label += btn_id;
+
+                if (ImGui::Button(label.c_str(), {btn_size, btn_size})) {
+                    last_context_action_ = {ContextAction::QuickReact, context_msg_ts_,
+                                            context_msg_text_, quick_emoji[i].name};
+                    ImGui::CloseCurrentPopup();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(":%s:", quick_emoji[i].name);
+                }
+                ImGui::PopStyleColor(3);
+            }
+
+            // "+" button to open the full emoji picker
+            ImGui::SameLine(0, 2);
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0.12f, 0.12f, 0.16f, 1.0f});
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{0.22f, 0.22f, 0.32f, 1.0f});
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4{0.28f, 0.28f, 0.40f, 1.0f});
+            if (ImGui::Button("+##qr_more", {btn_size, btn_size})) {
+                last_context_action_ = {ContextAction::React, context_msg_ts_, context_msg_text_};
+                ImGui::CloseCurrentPopup();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("more reactions...");
+            }
+            ImGui::PopStyleColor(3);
+        }
+
+        ImGui::Separator();
+
+        if (ImGui::MenuItem("Copy text")) {
             last_context_action_ = {ContextAction::Copy, context_msg_ts_, context_msg_text_};
         }
         if (ImGui::MenuItem("Reply in thread")) {
             last_context_action_ = {ContextAction::Reply, context_msg_ts_, context_msg_text_};
         }
-        if (ImGui::MenuItem("React")) {
-            last_context_action_ = {ContextAction::React, context_msg_ts_, context_msg_text_};
-        }
-        ImGui::Separator();
-        // edit/delete only make sense for your own messages, but we don't know
-        // who "you" are at this layer. let the owner filter these out if needed.
-        if (ImGui::MenuItem("Edit")) {
-            last_context_action_ = {ContextAction::Edit, context_msg_ts_, context_msg_text_};
-        }
-        if (ImGui::MenuItem("Delete")) {
-            last_context_action_ = {ContextAction::Delete, context_msg_ts_, context_msg_text_};
+
+        // edit/delete only for your own messages
+        bool is_own = (!self_user_id_.empty() && context_msg_user_ == self_user_id_);
+        if (is_own) {
+            ImGui::Separator();
+            if (ImGui::MenuItem("Edit")) {
+                last_context_action_ = {ContextAction::Edit, context_msg_ts_, context_msg_text_};
+            }
+            if (ImGui::MenuItem("Delete")) {
+                last_context_action_ = {ContextAction::Delete, context_msg_ts_, context_msg_text_};
+            }
         }
         ImGui::EndPopup();
     }

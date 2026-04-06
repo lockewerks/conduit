@@ -68,9 +68,8 @@ void NickList::render(float x, float y, float width, float height, const Theme& 
             ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         }
 
-        // right-click context menu
+        // right-click context menu (don't set clicked_nick_ here, wait for menu)
         if (ImGui::IsItemClicked(1)) {
-            clicked_nick_ = nick.name;
             ImGui::OpenPopup(("##nick_ctx_" + std::to_string(ni)).c_str());
         }
 

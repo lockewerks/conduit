@@ -154,6 +154,7 @@ struct Message {
     int reply_count = 0;
     std::vector<UserId> reply_users;
     bool is_pinned = false;
+    bool reply_broadcast = false;
 
     // computed at render time, don't persist this
     mutable float rendered_height = 0.0f;
@@ -167,6 +168,7 @@ inline void from_json(const nlohmann::json& j, Message& m) {
     m.subtype = j.value("subtype", "");
     m.reply_count = j.value("reply_count", 0);
     m.is_pinned = j.value("is_pinned", false);
+    m.reply_broadcast = j.value("reply_broadcast", false);
 
     if (j.contains("edited")) {
         m.is_edited = true;
@@ -224,15 +226,24 @@ inline void from_json(const nlohmann::json& j, Channel& c) {
     if (j.value("is_im", false)) {
         c.type = ChannelType::DirectMessage;
         c.dm_user_id = j.value("user", "");
+        // IMs don't have is_member — they're open if is_open is true or if
+        // they exist in the response at all. treat them as joined.
+        if (!c.is_member) {
+            c.is_member = j.value("is_open", true);
+        }
     } else if (j.value("is_mpim", false)) {
         c.type = ChannelType::MultiPartyDM;
+        // same for mpdm — is_member may not be set
+        if (!c.is_member) {
+            c.is_member = j.value("is_open", true);
+        }
     } else if (j.value("is_group", false) || j.value("is_private", false)) {
         c.type = ChannelType::PrivateChannel;
     } else {
         c.type = ChannelType::PublicChannel;
     }
 
-    c.is_muted = false; // slack doesn't always include this, we track it ourselves
+    c.is_muted = false;
 }
 
 struct ThreadInfo {

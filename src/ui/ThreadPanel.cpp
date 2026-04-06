@@ -1,4 +1,6 @@
 #include "ui/ThreadPanel.h"
+#include "render/TextRenderer.h"
+#include "util/TimeFormat.h"
 #include <imgui.h>
 
 namespace conduit::ui {
@@ -7,11 +9,14 @@ void ThreadPanel::open(const slack::ChannelId& channel, const slack::Timestamp& 
     channel_id_ = channel;
     parent_ts_ = parent_ts;
     is_open_ = true;
+    std::memset(reply_buf_, 0, sizeof(reply_buf_));
+    focus_reply_ = true;
 }
 
 void ThreadPanel::close() {
     is_open_ = false;
     messages_.clear();
+    std::memset(reply_buf_, 0, sizeof(reply_buf_));
 }
 
 void ThreadPanel::addMessage(const slack::Message& message) {
@@ -40,36 +45,113 @@ void ThreadPanel::render(float x, float y, float width, float height, const Them
     ImGui::PushStyleColor(ImGuiCol_ChildBg, theme.bg_main);
     ImGui::BeginChild("##thread_panel", {width, height}, false);
 
-    // header
+    float input_height = ImGui::GetTextLineHeightWithSpacing() * 2 + 8.0f;
+    float messages_height = height - input_height - 30.0f; // 30 for header
+
+    // header with close button
     ImGui::PushStyleColor(ImGuiCol_Text, theme.text_bright);
-    ImGui::TextUnformatted("Thread");
+    ImGui::TextUnformatted("  Thread");
+    ImGui::PopStyleColor();
+    ImGui::SameLine(width - 24.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
+    if (ImGui::SmallButton("X##close_thread")) {
+        close();
+        ImGui::PopStyleColor();
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+        return;
+    }
     ImGui::PopStyleColor();
     ImGui::Separator();
 
-    // render thread messages
+    // scrollable message area
+    ImGui::BeginChild("##thread_msgs", {0, messages_height}, false);
+
     for (auto& msg : messages_) {
+        float pad = 4.0f;
+        ImGui::SetCursorPosX(pad);
+
+        // timestamp
+        std::string time_str = util::formatTime(msg.ts);
         ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
-        ImGui::TextUnformatted(msg.ts.substr(0, 5).c_str()); // crude time
+        ImGui::TextUnformatted(time_str.c_str());
         ImGui::PopStyleColor();
-        ImGui::SameLine();
+        ImGui::SameLine(0, 0);
+
+        // resolve display name
+        std::string nick = msg.user;
+        if (display_name_fn_) {
+            nick = display_name_fn_(msg.user);
+        }
+
+        ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
+        ImGui::TextUnformatted(" <");
+        ImGui::PopStyleColor();
+        ImGui::SameLine(0, 0);
 
         ImGui::PushStyleColor(ImGuiCol_Text, theme.nickColor(msg.user));
-        ImGui::TextUnformatted(msg.user.c_str());
+        ImGui::TextUnformatted(nick.c_str());
         ImGui::PopStyleColor();
-        ImGui::SameLine();
+        ImGui::SameLine(0, 0);
 
-        ImGui::PushStyleColor(ImGuiCol_Text, theme.text_default);
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width - 20);
-        ImGui::TextUnformatted(msg.text.c_str());
-        ImGui::PopTextWrapPos();
+        ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
+        ImGui::TextUnformatted("> ");
         ImGui::PopStyleColor();
+        ImGui::SameLine(0, 0);
+
+        // message text with mrkdwn
+        float text_start = ImGui::GetCursorPosX();
+        float text_avail = width - text_start - pad;
+        auto spans = render::parseMrkdwn(msg.text);
+        if (!spans.empty()) {
+            render::renderSpans(spans, text_avail, theme.text_default);
+        } else {
+            ImGui::NewLine();
+        }
     }
 
     if (messages_.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
-        ImGui::TextUnformatted("No replies yet. Be the change you want to see.");
+        ImGui::TextUnformatted("  No replies yet.");
         ImGui::PopStyleColor();
     }
+
+    // auto-scroll to bottom when new messages arrive
+    if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 20.0f) {
+        ImGui::SetScrollHereY(1.0f);
+    }
+
+    ImGui::EndChild();
+
+    // reply input box
+    ImGui::Separator();
+    ImGui::SetCursorPosX(4.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
+    ImGui::TextUnformatted("  Reply:");
+    ImGui::PopStyleColor();
+
+    ImGui::SetCursorPosX(4.0f);
+    ImGui::PushItemWidth(width - 12.0f);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4{0.08f, 0.08f, 0.10f, 1.0f});
+    ImGui::PushStyleColor(ImGuiCol_Text, theme.text_default);
+
+    if (focus_reply_) {
+        ImGui::SetKeyboardFocusHere();
+        focus_reply_ = false;
+    }
+
+    ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue;
+    if (ImGui::InputText("##thread_reply", reply_buf_, sizeof(reply_buf_), flags)) {
+        std::string text(reply_buf_);
+        if (!text.empty() && reply_cb_) {
+            reply_cb_(channel_id_, parent_ts_, text);
+            std::memset(reply_buf_, 0, sizeof(reply_buf_));
+            focus_reply_ = true;
+        }
+    }
+
+    ImGui::PopStyleColor(2);
+    ImGui::PopItemWidth();
 
     ImGui::EndChild();
     ImGui::PopStyleColor();

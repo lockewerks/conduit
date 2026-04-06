@@ -16,6 +16,7 @@
 #include <SDL.h>
 #include <chrono>
 #include <memory>
+#include <mutex>
 
 typedef void* SDL_GLContext;
 
@@ -47,6 +48,7 @@ private:
     void handleKeyDown(const SDL_KeyboardEvent& key);
     void handleInputSubmit(const std::string& text);
     bool tryPasteClipboardImage();
+    std::string convertMentions(const std::string& text);
 
     // update the UI from real slack data
     void syncBufferList();
@@ -79,6 +81,7 @@ private:
     float last_frame_time_ = 0.0f;
     float ui_scale_ = 1.0f;
     bool fonts_need_rebuild_ = false;
+    bool panes_from_state_ = false;
 
     void rebuildFonts();
 
@@ -98,6 +101,14 @@ private:
     // token paste flow: waiting_for_token -> waiting_for_cookie -> connect
     enum class AuthState { None, WaitingForToken, WaitingForCookie } auth_state_ = AuthState::None;
     std::string pending_token_;
+
+    // when editing a specific message via right-click context menu
+    std::string editing_ts_;
+
+    // pending DM channel to switch to after buffer list refreshes
+    std::string pending_switch_channel_;
+    std::mutex pending_switch_mutex_;
+    int pending_switch_retries_ = 0;
 };
 
 } // namespace conduit

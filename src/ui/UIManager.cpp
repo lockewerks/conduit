@@ -7,43 +7,65 @@ namespace conduit::ui {
 
 UIManager::UIManager() {}
 
-// invisible vertical splitter handle that you can drag to resize panes
-// returns true while actively being dragged
+// direct mouse hit-test splitter — doesn't use InvisibleButton because
+// child windows eat those clicks. instead we check mouse position directly
+// against the splitter region and handle drag ourselves.
 bool UIManager::verticalSplitter(const char* id, float x, float y, float height,
                                   float* width_to_adjust, float min_w, float max_w,
                                   bool drag_left) {
-    const float handle_w = 6.0f; // clickable area width
-    const float visual_w = 1.0f; // the visible line
+    const float handle_w = 10.0f;
+    const float visual_w = 2.0f;
+    // offset the hit zone away from the scrollbar side. for right-side
+    // splitters (drag_left), the scrollbar is on the left, so shift right.
+    // for the left splitter, the scrollbar is on the right, so shift left.
+    float offset = drag_left ? 4.0f : -4.0f;
 
-    ImVec2 screen_pos = ImGui::GetWindowPos();
-    ImVec2 p0 = {screen_pos.x + x - handle_w * 0.5f, screen_pos.y + y};
-    ImVec2 p1 = {screen_pos.x + x + handle_w * 0.5f, screen_pos.y + y + height};
+    ImVec2 wpos = ImGui::GetWindowPos();
+    float sx = wpos.x + x;
+    float sy = wpos.y + y;
 
-    ImGui::SetCursorScreenPos(p0);
-    ImGui::InvisibleButton(id, {handle_w, height});
+    ImVec2 mouse = ImGui::GetIO().MousePos;
+    float hit_center = sx + offset;
+    bool mouse_in_rect = (mouse.x >= hit_center - handle_w * 0.5f &&
+                          mouse.x <= hit_center + handle_w * 0.5f &&
+                          mouse.y >= sy && mouse.y <= sy + height);
 
-    bool hovered = ImGui::IsItemHovered();
-    bool active = ImGui::IsItemActive();
+    // figure out which drag state bool to use based on ID
+    bool* dragging = nullptr;
+    if (std::string(id).find("left") != std::string::npos) dragging = &dragging_left_splitter_;
+    else if (std::string(id).find("thread") != std::string::npos) dragging = &dragging_thread_splitter_;
+    else dragging = &dragging_right_splitter_;
 
-    // change cursor to resize when hovering
+    // start dragging
+    if (mouse_in_rect && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsAnyItemActive()) {
+        *dragging = true;
+    }
+
+    // stop dragging
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        *dragging = false;
+    }
+
+    bool hovered = mouse_in_rect && !*dragging;
+    bool active = *dragging;
+
     if (hovered || active) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
     }
 
-    // draw the splitter line - brighter when hovered/dragged
-    ImU32 color = hovered || active
+    // draw splitter line on foreground so it's always visible
+    ImU32 color = (hovered || active)
         ? ImGui::ColorConvertFloat4ToU32({0.5f, 0.5f, 0.6f, 1.0f})
         : ImGui::ColorConvertFloat4ToU32({0.2f, 0.2f, 0.25f, 1.0f});
 
-    ImGui::GetWindowDrawList()->AddRectFilled(
-        {screen_pos.x + x - visual_w * 0.5f, screen_pos.y + y},
-        {screen_pos.x + x + visual_w * 0.5f, screen_pos.y + y + height},
+    ImGui::GetForegroundDrawList()->AddRectFilled(
+        {sx - visual_w * 0.5f, sy},
+        {sx + visual_w * 0.5f, sy + height},
         color);
 
-    // handle dragging
-    if (active && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+    if (active) {
         float delta = ImGui::GetIO().MouseDelta.x;
-        if (drag_left) delta = -delta; // for right-side panes, dragging left makes them wider
+        if (drag_left) delta = -delta;
         *width_to_adjust += delta;
         *width_to_adjust = std::clamp(*width_to_adjust, min_w, max_w);
         return true;
@@ -53,7 +75,6 @@ bool UIManager::verticalSplitter(const char* id, float x, float y, float height,
 }
 
 void UIManager::render() {
-    // fill the entire OS window - the OS handles the title bar, min/max/close
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
@@ -63,7 +84,6 @@ void UIManager::render() {
                              ImGuiWindowFlags_NoBringToFrontOnFocus |
                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
-    // tiny top padding so the info bar text doesn't kiss the window edge
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 2});
     ImGui::Begin("##conduit_main", nullptr, flags);
     ImGui::PopStyleVar();
@@ -93,11 +113,9 @@ void UIManager::render() {
     float sidebar_right = layout_.show_nick_list ? layout_.nick_list_width : 0.0f;
     float thread_w = thread_panel_.isOpen() ? layout_.thread_panel_width : 0.0f;
 
-    // make sure the center pane doesn't get squeezed to nothing
     float min_center = 200.0f;
     float used = sidebar_left + sidebar_right + thread_w;
     if (used + min_center > win_w) {
-        // scale everything down proportionally to fit
         float excess = used + min_center - win_w;
         float total = sidebar_left + sidebar_right + thread_w;
         if (total > 0) {
@@ -115,18 +133,15 @@ void UIManager::render() {
 
     float center_width = win_w - sidebar_left - sidebar_right - thread_w;
 
-    // vertical layout — input bar height is dynamic based on content
+    // vertical layout
     float title_h = layout_.title_bar_height;
     float status_h = layout_.status_bar_height;
-    float max_input_h = win_h * 0.4f; // don't let input eat more than 40% of the window
-    // we'll render the input bar later but need to know its height now
-    // estimate based on content (the render call will use the actual height)
+    float max_input_h = win_h * 0.4f;
     float input_h = layout_.input_bar_height;
     float center_height = win_h - title_h - input_h - status_h;
 
     // ---- render panels ----
 
-    // title bar (full width)
     title_bar_.render(0, 0, win_w, title_h, theme_);
 
     ImDrawList* wdl = ImGui::GetWindowDrawList();
@@ -135,8 +150,6 @@ void UIManager::render() {
     // left sidebar
     if (layout_.show_buffer_list) {
         buffer_list_.render(0, title_h, sidebar_left, center_height, theme_);
-
-        // hairline border so the sidebar doesn't just melt into the chat pane
         wdl->AddLine(
             {wpos.x + sidebar_left, wpos.y + title_h},
             {wpos.x + sidebar_left, wpos.y + title_h + center_height},
@@ -155,39 +168,33 @@ void UIManager::render() {
     // right sidebar
     if (layout_.show_nick_list) {
         nick_list_.render(win_w - sidebar_right, title_h, sidebar_right, center_height, theme_);
-
-        // matching hairline on the left edge of the nick list
         wdl->AddLine(
             {wpos.x + win_w - sidebar_right, wpos.y + title_h},
             {wpos.x + win_w - sidebar_right, wpos.y + title_h + center_height},
             ImGui::ColorConvertFloat4ToU32(theme_.separator_line));
     }
 
-    // input bar — render with dynamic height, then place status bar after it
+    // input bar
     float actual_input_h = input_bar_.render(0, title_h + center_height, win_w, max_input_h, theme_);
-    // update for next frame's layout
     layout_.input_bar_height = actual_input_h;
 
     // status bar
     status_bar_.render(0, title_h + center_height + actual_input_h, win_w, status_h, theme_);
 
-    // ---- draggable splitters between panes ----
+    // ---- draggable splitters (direct mouse hit-test, no InvisibleButton) ----
 
-    // splitter between buffer list and chat
     if (layout_.show_buffer_list) {
         verticalSplitter("##split_left", sidebar_left, title_h, center_height,
                          &layout_.buffer_list_width,
                          layout_.buffer_list_min, layout_.buffer_list_max);
     }
 
-    // splitter between chat and thread panel (or nick list if no thread)
     if (thread_panel_.isOpen()) {
         verticalSplitter("##split_thread", sidebar_left + center_width, title_h, center_height,
                          &layout_.thread_panel_width,
                          layout_.thread_panel_min, layout_.thread_panel_max, true);
     }
 
-    // splitter between thread/chat and nick list
     if (layout_.show_nick_list) {
         verticalSplitter("##split_right", win_w - sidebar_right, title_h, center_height,
                          &layout_.nick_list_width,
@@ -217,8 +224,6 @@ void UIManager::render() {
             SDL_SetClipboardText(ImGui::GetClipboardText());
         }
         if (ImGui::MenuItem("Paste", "Ctrl+V")) {
-            // can't paste right now because the popup stole focus from InputText.
-            // set a flag and the input bar will handle it next frame.
             wants_paste_text_ = true;
         }
         if (ImGui::MenuItem("Paste Image")) {

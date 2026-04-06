@@ -4,15 +4,13 @@
 namespace conduit::ui {
 
 BufferList::BufferList() {
-    // placeholder so it's not staring into the void on first launch
     entries_ = {
-        {"Conduit", false, false, 0, false, true, ""},
-        {"#welcome", true, false, 0, false, false, ""},
+        {"Conduit", false, false, 0, false, true, false, ""},
+        {"#welcome", true, false, 0, false, false, false, ""},
     };
 }
 
 void BufferList::setEntries(const std::vector<BufferEntry>& entries) {
-    // preserve selection if possible
     std::string prev_id;
     if (selected_ >= 0 && selected_ < (int)entries_.size()) {
         prev_id = entries_[selected_].channel_id;
@@ -20,7 +18,6 @@ void BufferList::setEntries(const std::vector<BufferEntry>& entries) {
 
     entries_ = entries;
 
-    // try to re-select the same channel
     if (!prev_id.empty()) {
         for (int i = 0; i < (int)entries_.size(); i++) {
             if (entries_[i].channel_id == prev_id) {
@@ -30,9 +27,8 @@ void BufferList::setEntries(const std::vector<BufferEntry>& entries) {
         }
     }
 
-    // couldn't find it, default to first non-separator
     for (int i = 0; i < (int)entries_.size(); i++) {
-        if (!entries_[i].is_separator) {
+        if (!entries_[i].is_separator && !entries_[i].is_section_header) {
             selected_ = i;
             return;
         }
@@ -47,22 +43,23 @@ void BufferList::render(float x, float y, float width, float height, const Theme
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     float line_height = ImGui::GetTextLineHeightWithSpacing();
+    ImVec4 accent = theme.nick_colors[0];
 
-    // thin accent color for the selection indicator
-    ImVec4 accent = theme.nick_colors[0]; // that nice cyan
+    // track which section we're in for collapse logic
+    std::string current_section;
+    bool section_collapsed = false;
 
     for (int i = 0; i < (int)entries_.size(); i++) {
         const auto& entry = entries_[i];
 
+        // org header separator
         if (entry.is_separator) {
-            // org header - bold-ish uppercase vibes
             ImGui::Dummy({0, 2.0f});
             ImGui::PushStyleColor(ImGuiCol_Text, theme.text_bright);
             ImGui::SetCursorPosX(8.0f);
             ImGui::TextUnformatted(entry.name.c_str());
             ImGui::PopStyleColor();
 
-            // subtle separator line underneath
             ImVec2 p = ImGui::GetCursorScreenPos();
             dl->AddLine({p.x + 6.0f, p.y}, {p.x + width - 6.0f, p.y},
                         ImGui::ColorConvertFloat4ToU32(theme.separator_line));
@@ -70,10 +67,52 @@ void BufferList::render(float x, float y, float width, float height, const Theme
             continue;
         }
 
+        // section header ("Channels", "Direct Messages")
+        if (entry.is_section_header) {
+            current_section = entry.name;
+            section_collapsed = isSectionCollapsed(entry.name);
+
+            ImGui::Dummy({0, 4.0f});
+            ImVec2 sec_pos = ImGui::GetCursorScreenPos();
+
+            // clickable section header
+            ImGui::SetCursorPosX(6.0f);
+            if (ImGui::InvisibleButton(("##sec_" + entry.name).c_str(),
+                                       {width - 12.0f, line_height})) {
+                toggleSection(entry.name);
+                section_collapsed = isSectionCollapsed(entry.name);
+            }
+
+            // draw the label over the invisible button
+            ImGui::SetCursorScreenPos(sec_pos);
+            ImGui::SetCursorPosX(8.0f);
+
+            // collapse/expand triangle
+            ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
+            ImGui::TextUnformatted(section_collapsed ? "\xe2\x96\xb6" : "\xe2\x96\xbc"); // ▶ or ▼
+            ImGui::PopStyleColor();
+            ImGui::SameLine(0, 4.0f);
+
+            ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
+            ImGui::TextUnformatted(entry.name.c_str());
+            ImGui::PopStyleColor();
+
+            // hover feedback
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            }
+
+            ImGui::Dummy({0, 1.0f});
+            continue;
+        }
+
+        // skip entries in collapsed sections
+        if (section_collapsed) continue;
+
         bool is_selected = (i == selected_);
         ImVec2 cursor_before = ImGui::GetCursorScreenPos();
 
-        // selected item: thin left accent bar instead of garish full-row highlight
+        // selection highlight
         if (is_selected) {
             dl->AddRectFilled(
                 cursor_before,
@@ -86,13 +125,12 @@ void BufferList::render(float x, float y, float width, float height, const Theme
                 ImGui::ColorConvertFloat4ToU32(accent));
         }
 
-        // invisible selectable for click handling (covers the full row)
         if (ImGui::Selectable(("##buf" + std::to_string(i)).c_str(), is_selected,
                                ImGuiSelectableFlags_None, {width - 4.0f, line_height})) {
             selected_ = i;
         }
 
-        // hover highlight - just a whisper of color so you know something's there
+        // hover highlight
         if (ImGui::IsItemHovered() && !is_selected) {
             dl->AddRectFilled(
                 cursor_before,
@@ -106,10 +144,10 @@ void BufferList::render(float x, float y, float width, float height, const Theme
             ImGui::OpenPopup(("##chan_ctx_" + std::to_string(i)).c_str());
         }
 
-        // truncation tooltip - don't make people guess at long channel names
+        // tooltip for truncated names
         {
             float right_margin = (entry.unread_count > 0) ? 40.0f : 8.0f;
-            float avail_w = width - 10.0f - right_margin; // 10.0f is the indent
+            float avail_w = width - 10.0f - right_margin;
             float name_w = ImGui::CalcTextSize(entry.name.c_str()).x;
             if (ImGui::IsItemHovered() && name_w > avail_w && avail_w > 0) {
                 ImGui::SetTooltip("%s", entry.name.c_str());
@@ -118,49 +156,41 @@ void BufferList::render(float x, float y, float width, float height, const Theme
 
         // channel context menu
         if (ImGui::BeginPopup(("##chan_ctx_" + std::to_string(i)).c_str())) {
-            if (ImGui::MenuItem("Mark as read")) {
-                // placeholder - parent handles this via right_clicked_channel_
-            }
-            if (ImGui::MenuItem("Leave channel")) {
-                // same deal
-            }
+            if (ImGui::MenuItem("Mark as read")) {}
+            if (ImGui::MenuItem("Leave channel")) {}
             ImGui::EndPopup();
         }
 
         ImGui::SameLine(0, 0);
-        ImGui::SetCursorPosX(10.0f); // indented under the org header
+        ImGui::SetCursorPosX(10.0f);
 
-        // unread indicator: green bullet for channels with new stuff
+        // unread indicator
         if (entry.has_unread) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.30f, 0.85f, 0.40f, 1.0f});
-            ImGui::TextUnformatted("\xe2\x97\x8f"); // "●"
+            ImGui::TextUnformatted("\xe2\x97\x8f");
             ImGui::PopStyleColor();
             ImGui::SameLine(0, 4.0f);
         } else {
-            // faint dot so alignment stays consistent
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{theme.text_dim.x, theme.text_dim.y,
                                                           theme.text_dim.z, 0.3f});
-            ImGui::TextUnformatted("\xe2\x97\x8f"); // "●"
+            ImGui::TextUnformatted("\xe2\x97\x8f");
             ImGui::PopStyleColor();
             ImGui::SameLine(0, 4.0f);
         }
 
-        // channel name - bright if unread, dim if old news.
-        // clip the text so long-ass channel names don't spill into the void
+        // channel/DM name
         if (entry.has_unread || is_selected) {
             ImGui::PushStyleColor(ImGuiCol_Text, theme.text_bright);
         } else {
             ImGui::PushStyleColor(ImGuiCol_Text, theme.text_dim);
         }
         {
-            // truncate long channel names with ".." so they don't clip ugly
             float right_margin = (entry.unread_count > 0) ? 40.0f : 8.0f;
             float avail_w = width - ImGui::GetCursorPosX() - right_margin;
             float name_w = ImGui::CalcTextSize(entry.name.c_str()).x;
             if (name_w <= avail_w || avail_w <= 0) {
                 ImGui::TextUnformatted(entry.name.c_str());
             } else {
-                // find how many chars fit, then add ".."
                 float dots_w = ImGui::CalcTextSize("..").x;
                 float target_w = avail_w - dots_w;
                 std::string truncated;
@@ -174,14 +204,13 @@ void BufferList::render(float x, float y, float width, float height, const Theme
         }
         ImGui::PopStyleColor();
 
-        // unread count badge, tucked to the right
+        // unread count badge
         if (entry.unread_count > 0) {
             std::string badge = std::to_string(entry.unread_count);
             float badge_w = ImGui::CalcTextSize(badge.c_str()).x + 8.0f;
             float badge_x = width - badge_w - 8.0f;
             float badge_y = cursor_before.y + (line_height - ImGui::GetTextLineHeight()) * 0.5f;
 
-            // little pill-shaped badge
             dl->AddRectFilled(
                 {cursor_before.x + badge_x, badge_y - 1.0f},
                 {cursor_before.x + badge_x + badge_w, badge_y + ImGui::GetTextLineHeight() + 1.0f},
@@ -195,7 +224,6 @@ void BufferList::render(float x, float y, float width, float height, const Theme
             ImGui::PopStyleColor();
         }
 
-        // tiny gap between entries so they don't blur together
         ImGui::Dummy({0, 1.0f});
     }
 
@@ -209,13 +237,15 @@ void BufferList::select(int index) {
 
 void BufferList::selectNext() {
     int next = selected_ + 1;
-    while (next < (int)entries_.size() && entries_[next].is_separator) next++;
+    while (next < (int)entries_.size() &&
+           (entries_[next].is_separator || entries_[next].is_section_header)) next++;
     if (next < (int)entries_.size()) selected_ = next;
 }
 
 void BufferList::selectPrev() {
     int prev = selected_ - 1;
-    while (prev >= 0 && entries_[prev].is_separator) prev--;
+    while (prev >= 0 &&
+           (entries_[prev].is_separator || entries_[prev].is_section_header)) prev--;
     if (prev >= 0) selected_ = prev;
 }
 

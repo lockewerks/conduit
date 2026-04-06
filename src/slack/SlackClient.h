@@ -38,13 +38,16 @@ public:
     bool leaveChannel(const ChannelId& id);
     bool markRead(const ChannelId& channel, const Timestamp& ts);
     bool setTopic(const ChannelId& channel, const std::string& topic);
+    // open (or find) a DM channel with a user. returns channel ID on success.
+    std::optional<ChannelId> openDM(const UserId& user_id);
 
     // message operations
     std::vector<Message> getHistory(const ChannelId& channel, int limit = 100,
                                      const std::optional<Timestamp>& before = std::nullopt);
     std::vector<Message> getThreadReplies(const ChannelId& channel, const Timestamp& thread_ts);
     bool sendMessage(const ChannelId& channel, const std::string& text,
-                     const std::optional<Timestamp>& thread_ts = std::nullopt);
+                     const std::optional<Timestamp>& thread_ts = std::nullopt,
+                     bool reply_broadcast = false);
     bool editMessage(const ChannelId& channel, const Timestamp& ts, const std::string& new_text);
     bool deleteMessage(const ChannelId& channel, const Timestamp& ts);
     bool addReaction(const ChannelId& channel, const Timestamp& ts, const std::string& emoji);
@@ -71,6 +74,9 @@ public:
     std::vector<Message> getPins(const ChannelId& channel);
     bool pinMessage(const ChannelId& channel, const Timestamp& ts);
     bool unpinMessage(const ChannelId& channel, const Timestamp& ts);
+
+    // emoji
+    std::unordered_map<std::string, std::string> getCustomEmoji();
 
     // typing
     void sendTyping(const ChannelId& channel);
