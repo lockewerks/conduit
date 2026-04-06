@@ -4,7 +4,9 @@
 namespace conduit::slack {
 
 SlackClient::SlackClient(const OrgConfig& config, cache::Database& db)
-    : config_(config), db_(db), channel_cache_(db), user_cache_(db) {}
+    : config_(config), db_(db), channel_cache_(db), user_cache_(db),
+      bookmark_cache_(db), reminder_cache_(db), draft_store_(db),
+      user_group_cache_(db), saved_item_cache_(db) {}
 
 SlackClient::~SlackClient() {
     disconnect();
@@ -112,6 +114,50 @@ bool SlackClient::connect() {
                 e.user = msg.value("user", "");
                 e.is_online = (msg.value("presence", "") == "active");
                 event_queue_.push(std::move(e));
+            } else if (type == "bookmark_added" || type == "bookmark_deleted") {
+                SlackEvent e;
+                e.type = (type == "bookmark_added") ? SlackEvent::Type::BookmarkAdded
+                                                     : SlackEvent::Type::BookmarkRemoved;
+                if (msg.contains("bookmark")) {
+                    e.bookmark = msg["bookmark"].get<Bookmark>();
+                }
+                e.channel = msg.value("channel_id", "");
+                event_queue_.push(std::move(e));
+            } else if (type == "dnd_updated" || type == "dnd_updated_user") {
+                SlackEvent e;
+                e.type = SlackEvent::Type::DndUpdated;
+                if (msg.contains("dnd_status")) {
+                    e.dnd_status = msg["dnd_status"].get<DndStatus>();
+                }
+                event_queue_.push(std::move(e));
+            } else if (type == "reminder_fired") {
+                SlackEvent e;
+                e.type = SlackEvent::Type::ReminderFired;
+                if (msg.contains("reminder")) {
+                    e.reminder = msg["reminder"].get<Reminder>();
+                }
+                event_queue_.push(std::move(e));
+            } else if (type == "star_added" || type == "star_removed") {
+                SlackEvent e;
+                e.type = (type == "star_added") ? SlackEvent::Type::StarAdded
+                                                 : SlackEvent::Type::StarRemoved;
+                if (msg.contains("item")) {
+                    e.channel = msg["item"].value("channel", "");
+                    e.ts = msg["item"].value("message", nlohmann::json{}).value("ts", "");
+                }
+                event_queue_.push(std::move(e));
+            } else if (type == "subteam_updated" || type == "subteam_members_changed") {
+                SlackEvent e;
+                e.type = SlackEvent::Type::UserGroupUpdated;
+                if (msg.contains("subteam")) {
+                    e.user_group = msg["subteam"].get<UserGroup>();
+                }
+                event_queue_.push(std::move(e));
+            } else if (type == "channel_unarchive") {
+                SlackEvent e;
+                e.type = SlackEvent::Type::ChannelUnarchived;
+                e.channel = msg.value("channel", "");
+                event_queue_.push(std::move(e));
             }
             // ignore types we don't care about (pref_change, etc)
         });
@@ -160,8 +206,26 @@ void SlackClient::bootstrapData() {
     auto users = fetchPaginated<User>("users.list", "members");
     user_cache_.loadFromAPI(users);
 
+    // fetch user groups
+    auto groups = getUserGroups(true);
+    user_group_cache_.loadFromAPI(groups);
+
+    // fetch DND status
+    dnd_status_ = getDndStatus();
+
+    // load cached data for new features from DB
+    bookmark_cache_.loadFromDB();
+    reminder_cache_.loadFromDB();
+    draft_store_.loadFromDB();
+    saved_item_cache_.loadFromDB();
+
+    // fetch fresh reminders + saved items (small payloads)
+    auto reminders = getReminders();
+    reminder_cache_.loadFromAPI(reminders);
+
     LOG_INFO("bootstrap complete: " + std::to_string(channels.size()) + " channels, " +
-             std::to_string(users.size()) + " users");
+             std::to_string(users.size()) + " users, " +
+             std::to_string(groups.size()) + " user groups");
 }
 
 template <typename T>
@@ -555,6 +619,270 @@ bool SlackClient::setPresence(bool is_away) {
     auto result = api_->post("users.setPresence",
                               {{"presence", is_away ? "away" : "auto"}});
     return result && result->value("ok", false);
+}
+
+// -- channel creation --
+
+std::optional<Channel> SlackClient::createChannel(const std::string& name, bool is_private) {
+    nlohmann::json body = {{"name", name}, {"is_private", is_private}};
+    rate_limiter_.recordCall("conversations.create");
+    auto result = api_->post("conversations.create", body);
+    if (!result || !result->value("ok", false)) {
+        LOG_ERROR("createChannel failed: " + (result ? result->value("error", "unknown") : "no response"));
+        return std::nullopt;
+    }
+    if (result->contains("channel")) {
+        auto ch = (*result)["channel"].get<Channel>();
+        ch.is_member = true;
+        channel_cache_.upsert(ch);
+        return ch;
+    }
+    return std::nullopt;
+}
+
+bool SlackClient::archiveChannel(const ChannelId& id) {
+    rate_limiter_.recordCall("conversations.archive");
+    auto result = api_->post("conversations.archive", {{"channel", id}});
+    return result && result->value("ok", false);
+}
+
+// -- bookmarks --
+
+std::vector<Bookmark> SlackClient::getBookmarks(const ChannelId& channel) {
+    rate_limiter_.recordCall("bookmarks.list");
+    auto result = api_->get("bookmarks.list", "channel_id=" + channel);
+    if (!result || !result->value("ok", false)) return {};
+
+    std::vector<Bookmark> bookmarks;
+    if (result->contains("bookmarks") && (*result)["bookmarks"].is_array()) {
+        for (auto& b : (*result)["bookmarks"]) {
+            try { bookmarks.push_back(b.get<Bookmark>()); } catch (...) {}
+        }
+    }
+    bookmark_cache_.loadForChannel(channel, bookmarks);
+    return bookmarks;
+}
+
+bool SlackClient::addBookmark(const ChannelId& channel, const std::string& title,
+                               const std::string& link) {
+    rate_limiter_.recordCall("bookmarks.add");
+    auto result = api_->post("bookmarks.add",
+                              {{"channel_id", channel}, {"title", title}, {"link", link}, {"type", "link"}});
+    return result && result->value("ok", false);
+}
+
+bool SlackClient::removeBookmark(const ChannelId& channel, const std::string& bookmark_id) {
+    rate_limiter_.recordCall("bookmarks.remove");
+    auto result = api_->post("bookmarks.remove",
+                              {{"channel_id", channel}, {"bookmark_id", bookmark_id}});
+    return result && result->value("ok", false);
+}
+
+// -- scheduled messages --
+
+bool SlackClient::scheduleMessage(const ChannelId& channel, const std::string& text,
+                                   int64_t post_at, const std::optional<Timestamp>& thread_ts) {
+    nlohmann::json body = {{"channel", channel}, {"text", text}, {"post_at", post_at}};
+    if (thread_ts) body["thread_ts"] = *thread_ts;
+    rate_limiter_.recordCall("chat.scheduleMessage");
+    auto result = api_->post("chat.scheduleMessage", body);
+    if (!result || !result->value("ok", false)) {
+        LOG_ERROR("scheduleMessage failed: " + (result ? result->value("error", "unknown") : "no response"));
+        return false;
+    }
+    return true;
+}
+
+std::vector<ScheduledMessage> SlackClient::getScheduledMessages(const ChannelId& channel) {
+    nlohmann::json body = {};
+    if (!channel.empty()) body["channel"] = channel;
+    rate_limiter_.recordCall("chat.scheduledMessages.list");
+    auto result = api_->post("chat.scheduledMessages.list", body);
+    if (!result || !result->value("ok", false)) return {};
+
+    std::vector<ScheduledMessage> msgs;
+    if (result->contains("scheduled_messages") && (*result)["scheduled_messages"].is_array()) {
+        for (auto& m : (*result)["scheduled_messages"]) {
+            try { msgs.push_back(m.get<ScheduledMessage>()); } catch (...) {}
+        }
+    }
+    return msgs;
+}
+
+bool SlackClient::deleteScheduledMessage(const ChannelId& channel,
+                                          const std::string& scheduled_id) {
+    rate_limiter_.recordCall("chat.deleteScheduledMessage");
+    auto result = api_->post("chat.deleteScheduledMessage",
+                              {{"channel", channel}, {"scheduled_message_id", scheduled_id}});
+    return result && result->value("ok", false);
+}
+
+// -- reminders --
+
+std::vector<Reminder> SlackClient::getReminders() {
+    rate_limiter_.recordCall("reminders.list");
+    auto result = api_->get("reminders.list");
+    if (!result || !result->value("ok", false)) return {};
+
+    std::vector<Reminder> reminders;
+    if (result->contains("reminders") && (*result)["reminders"].is_array()) {
+        for (auto& r : (*result)["reminders"]) {
+            try { reminders.push_back(r.get<Reminder>()); } catch (...) {}
+        }
+    }
+    return reminders;
+}
+
+bool SlackClient::addReminder(const std::string& text, int64_t time,
+                               const std::string& user_or_channel) {
+    nlohmann::json body = {{"text", text}, {"time", time}};
+    if (!user_or_channel.empty()) body["user"] = user_or_channel;
+    rate_limiter_.recordCall("reminders.add");
+    auto result = api_->post("reminders.add", body);
+    return result && result->value("ok", false);
+}
+
+bool SlackClient::deleteReminder(const std::string& reminder_id) {
+    rate_limiter_.recordCall("reminders.delete");
+    auto result = api_->post("reminders.delete", {{"reminder", reminder_id}});
+    return result && result->value("ok", false);
+}
+
+bool SlackClient::completeReminder(const std::string& reminder_id) {
+    rate_limiter_.recordCall("reminders.complete");
+    auto result = api_->post("reminders.complete", {{"reminder", reminder_id}});
+    return result && result->value("ok", false);
+}
+
+// -- user groups --
+
+std::vector<UserGroup> SlackClient::getUserGroups(bool include_users) {
+    std::string params = "include_users=" + std::string(include_users ? "true" : "false");
+    rate_limiter_.recordCall("usergroups.list");
+    auto result = api_->get("usergroups.list", params);
+    if (!result || !result->value("ok", false)) return {};
+
+    std::vector<UserGroup> groups;
+    if (result->contains("usergroups") && (*result)["usergroups"].is_array()) {
+        for (auto& g : (*result)["usergroups"]) {
+            try { groups.push_back(g.get<UserGroup>()); } catch (...) {}
+        }
+    }
+    return groups;
+}
+
+// -- DND --
+
+DndStatus SlackClient::getDndStatus() {
+    rate_limiter_.recordCall("dnd.info");
+    auto result = api_->get("dnd.info");
+    if (!result || !result->value("ok", false)) return {};
+    return result->get<DndStatus>();
+}
+
+bool SlackClient::setSnooze(int minutes) {
+    rate_limiter_.recordCall("dnd.setSnooze");
+    auto result = api_->post("dnd.setSnooze", {{"num_minutes", minutes}});
+    if (result && result->value("ok", false)) {
+        dnd_status_.snooze_enabled = true;
+        return true;
+    }
+    return false;
+}
+
+bool SlackClient::endSnooze() {
+    rate_limiter_.recordCall("dnd.endSnooze");
+    auto result = api_->post("dnd.endSnooze", {});
+    if (result && result->value("ok", false)) {
+        dnd_status_.snooze_enabled = false;
+        return true;
+    }
+    return false;
+}
+
+// -- saved items --
+
+std::vector<SavedItem> SlackClient::getSavedItems() {
+    rate_limiter_.recordCall("stars.list");
+    auto result = api_->get("stars.list", "count=200");
+    if (!result || !result->value("ok", false)) return {};
+
+    std::vector<SavedItem> items;
+    if (result->contains("items") && (*result)["items"].is_array()) {
+        for (auto& item : (*result)["items"]) {
+            if (item.value("type", "") == "message") {
+                SavedItem si;
+                si.type = "message";
+                si.channel_id = item.value("channel", "");
+                if (item.contains("message")) {
+                    si.message_ts = item["message"].value("ts", "");
+                }
+                si.date_saved = item.value("date_create", int64_t(0));
+                items.push_back(si);
+            }
+        }
+    }
+    return items;
+}
+
+bool SlackClient::saveItem(const ChannelId& channel, const Timestamp& ts) {
+    rate_limiter_.recordCall("stars.add");
+    auto result = api_->post("stars.add", {{"channel", channel}, {"timestamp", ts}});
+    if (result && result->value("ok", false)) {
+        SavedItem si;
+        si.type = "message";
+        si.channel_id = channel;
+        si.message_ts = ts;
+        saved_item_cache_.add(si);
+        return true;
+    }
+    return false;
+}
+
+bool SlackClient::removeSavedItem(const ChannelId& channel, const Timestamp& ts) {
+    rate_limiter_.recordCall("stars.remove");
+    auto result = api_->post("stars.remove", {{"channel", channel}, {"timestamp", ts}});
+    if (result && result->value("ok", false)) {
+        saved_item_cache_.remove(channel, ts);
+        return true;
+    }
+    return false;
+}
+
+// -- files listing --
+
+SlackClient::FileListResult SlackClient::listFiles(const ChannelId& channel, int count, int page) {
+    std::string params = "count=" + std::to_string(count) + "&page=" + std::to_string(page);
+    if (!channel.empty()) params += "&channel=" + channel;
+    rate_limiter_.recordCall("files.list");
+    auto result = api_->get("files.list", params);
+    if (!result || !result->value("ok", false)) return {};
+
+    FileListResult flr;
+    if (result->contains("paging")) {
+        flr.total = (*result)["paging"].value("total", 0);
+    }
+    if (result->contains("files") && (*result)["files"].is_array()) {
+        for (auto& f : (*result)["files"]) {
+            try { flr.files.push_back(f.get<SlackFile>()); } catch (...) {}
+        }
+    }
+    return flr;
+}
+
+// -- user profile (full) --
+
+std::optional<User> SlackClient::getUserProfile(const UserId& id) {
+    rate_limiter_.recordCall("users.info");
+    auto result = api_->get("users.info", "user=" + id);
+    if (!result || !result->value("ok", false)) return std::nullopt;
+
+    if (result->contains("user")) {
+        auto user = (*result)["user"].get<User>();
+        user_cache_.upsert(user);
+        return user;
+    }
+    return std::nullopt;
 }
 
 bool SlackClient::pollEvent(SlackEvent& event_out) {

@@ -30,6 +30,11 @@ struct UIConfig {
     bool animate_gifs = true;
     bool show_inline_images = true;
     std::string buffer_sort = "activity";
+    bool show_bookmark_bar = true;
+    bool show_link_previews = true;
+    bool show_block_images = true;
+    bool compact_attachments = false;
+    float profile_panel_width = 280.0f;
 };
 
 struct NotifyConfig {
@@ -38,6 +43,8 @@ struct NotifyConfig {
     bool sound_enabled = false;
     std::string dnd_start;
     std::string dnd_end;
+    bool enforce_dnd = true;
+    int snooze_default_minutes = 30;
 };
 
 struct NetworkConfig {

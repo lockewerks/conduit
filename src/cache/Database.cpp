@@ -216,9 +216,122 @@ bool Database::createSchema() {
 
 bool Database::migrate() {
     int version = schemaVersion();
-    // no migrations yet. when we need them, they go here.
-    // version 1 -> 2: ALTER TABLE whatever ADD COLUMN whatever
     if (version < 1) return createSchema();
+
+    if (version < 2) {
+        LOG_INFO("migrating database schema v1 -> v2");
+
+        // messages: add blocks and bot_id
+        exec("ALTER TABLE messages ADD COLUMN blocks_json TEXT DEFAULT '[]'");
+        exec("ALTER TABLE messages ADD COLUMN bot_id TEXT DEFAULT ''");
+
+        // users: extended profile fields
+        exec("ALTER TABLE users ADD COLUMN title TEXT DEFAULT ''");
+        exec("ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''");
+        exec("ALTER TABLE users ADD COLUMN phone TEXT DEFAULT ''");
+        exec("ALTER TABLE users ADD COLUMN tz TEXT DEFAULT ''");
+        exec("ALTER TABLE users ADD COLUMN tz_label TEXT DEFAULT ''");
+        exec("ALTER TABLE users ADD COLUMN tz_offset INTEGER DEFAULT 0");
+        exec("ALTER TABLE users ADD COLUMN pronouns TEXT DEFAULT ''");
+        exec("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0");
+        exec("ALTER TABLE users ADD COLUMN is_owner INTEGER DEFAULT 0");
+
+        // bookmarks
+        exec(R"SQL(
+            CREATE TABLE IF NOT EXISTS bookmarks (
+                id TEXT PRIMARY KEY,
+                channel_id TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                link TEXT DEFAULT '',
+                emoji TEXT DEFAULT '',
+                type TEXT DEFAULT 'link',
+                created_by TEXT DEFAULT '',
+                date_created INTEGER DEFAULT 0
+            )
+        )SQL");
+        exec("CREATE INDEX IF NOT EXISTS idx_bookmarks_channel ON bookmarks(channel_id)");
+
+        // reminders
+        exec(R"SQL(
+            CREATE TABLE IF NOT EXISTS reminders (
+                id TEXT PRIMARY KEY,
+                creator TEXT NOT NULL DEFAULT '',
+                text TEXT NOT NULL DEFAULT '',
+                user_id TEXT NOT NULL DEFAULT '',
+                time INTEGER NOT NULL DEFAULT 0,
+                complete_ts INTEGER DEFAULT 0,
+                is_complete INTEGER DEFAULT 0
+            )
+        )SQL");
+        exec("CREATE INDEX IF NOT EXISTS idx_reminders_time ON reminders(time)");
+
+        // scheduled messages
+        exec(R"SQL(
+            CREATE TABLE IF NOT EXISTS scheduled_messages (
+                id TEXT PRIMARY KEY,
+                channel_id TEXT NOT NULL,
+                text TEXT NOT NULL DEFAULT '',
+                post_at INTEGER NOT NULL DEFAULT 0,
+                date_created INTEGER DEFAULT 0
+            )
+        )SQL");
+
+        // user groups
+        exec(R"SQL(
+            CREATE TABLE IF NOT EXISTS user_groups (
+                id TEXT PRIMARY KEY,
+                handle TEXT NOT NULL DEFAULT '',
+                name TEXT NOT NULL DEFAULT '',
+                description TEXT DEFAULT '',
+                members_json TEXT DEFAULT '[]',
+                member_count INTEGER DEFAULT 0
+            )
+        )SQL");
+
+        // saved items
+        exec(R"SQL(
+            CREATE TABLE IF NOT EXISTS saved_items (
+                channel_id TEXT NOT NULL,
+                message_ts TEXT NOT NULL,
+                date_saved INTEGER DEFAULT (strftime('%s', 'now')),
+                PRIMARY KEY (channel_id, message_ts)
+            )
+        )SQL");
+
+        // drafts
+        exec(R"SQL(
+            CREATE TABLE IF NOT EXISTS drafts (
+                channel_id TEXT PRIMARY KEY,
+                text TEXT NOT NULL DEFAULT '',
+                thread_ts TEXT DEFAULT '',
+                updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+            )
+        )SQL");
+
+        // channel sections (local sidebar organization)
+        exec(R"SQL(
+            CREATE TABLE IF NOT EXISTS channel_sections (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                channel_ids_json TEXT DEFAULT '[]',
+                sort_order INTEGER DEFAULT 0,
+                collapsed INTEGER DEFAULT 0
+            )
+        )SQL");
+
+        // per-channel notification overrides
+        exec(R"SQL(
+            CREATE TABLE IF NOT EXISTS channel_notify_prefs (
+                channel_id TEXT PRIMARY KEY,
+                notify_level TEXT DEFAULT 'default',
+                muted INTEGER DEFAULT 0
+            )
+        )SQL");
+
+        exec("UPDATE schema_version SET version = 2");
+        LOG_INFO("database migration to v2 complete");
+    }
+
     return true;
 }
 

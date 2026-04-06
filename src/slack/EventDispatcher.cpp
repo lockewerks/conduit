@@ -37,6 +37,16 @@ std::optional<SlackEvent> EventDispatcher::dispatch(const nlohmann::json& payloa
         return handlePin(event, true);
     } else if (type == "pin_removed") {
         return handlePin(event, false);
+    } else if (type == "bookmark_added" || type == "bookmark_deleted") {
+        return handleBookmark(event, type == "bookmark_added");
+    } else if (type == "dnd_updated" || type == "dnd_updated_user") {
+        return handleDnd(event);
+    } else if (type == "reminder_fired") {
+        return handleReminder(event);
+    } else if (type == "star_added" || type == "star_removed") {
+        return handleStar(event, type == "star_added");
+    } else if (type == "subteam_updated" || type == "subteam_members_changed") {
+        return handleUserGroupUpdate(event);
     }
 
     LOG_DEBUG("unhandled event type: " + type);
@@ -94,6 +104,8 @@ std::optional<SlackEvent> EventDispatcher::handleChannelEvent(const nlohmann::js
         e.type = SlackEvent::Type::ChannelCreated;
     } else if (type == "channel_rename") {
         e.type = SlackEvent::Type::ChannelRenamed;
+    } else if (type == "channel_unarchive") {
+        e.type = SlackEvent::Type::ChannelUnarchived;
     } else {
         e.type = SlackEvent::Type::ChannelArchived;
     }
@@ -154,6 +166,58 @@ std::optional<SlackEvent> EventDispatcher::handlePin(const nlohmann::json& event
         if (item.contains("message")) {
             e.ts = item["message"].value("ts", "");
         }
+    }
+    return e;
+}
+
+std::optional<SlackEvent> EventDispatcher::handleBookmark(const nlohmann::json& event,
+                                                          bool added) {
+    SlackEvent e;
+    e.type = added ? SlackEvent::Type::BookmarkAdded : SlackEvent::Type::BookmarkRemoved;
+    if (event.contains("bookmark")) {
+        e.bookmark = event["bookmark"].get<Bookmark>();
+    }
+    e.channel = event.value("channel_id", "");
+    return e;
+}
+
+std::optional<SlackEvent> EventDispatcher::handleDnd(const nlohmann::json& event) {
+    SlackEvent e;
+    e.type = SlackEvent::Type::DndUpdated;
+    if (event.contains("dnd_status")) {
+        e.dnd_status = event["dnd_status"].get<DndStatus>();
+    }
+    e.user = event.value("user", "");
+    return e;
+}
+
+std::optional<SlackEvent> EventDispatcher::handleReminder(const nlohmann::json& event) {
+    SlackEvent e;
+    e.type = SlackEvent::Type::ReminderFired;
+    if (event.contains("reminder")) {
+        e.reminder = event["reminder"].get<Reminder>();
+    }
+    return e;
+}
+
+std::optional<SlackEvent> EventDispatcher::handleStar(const nlohmann::json& event, bool added) {
+    SlackEvent e;
+    e.type = added ? SlackEvent::Type::StarAdded : SlackEvent::Type::StarRemoved;
+    if (event.contains("item")) {
+        e.channel = event["item"].value("channel", "");
+        if (event["item"].contains("message")) {
+            e.ts = event["item"]["message"].value("ts", "");
+        }
+    }
+    e.user = event.value("user", "");
+    return e;
+}
+
+std::optional<SlackEvent> EventDispatcher::handleUserGroupUpdate(const nlohmann::json& event) {
+    SlackEvent e;
+    e.type = SlackEvent::Type::UserGroupUpdated;
+    if (event.contains("subteam")) {
+        e.user_group = event["subteam"].get<UserGroup>();
     }
     return e;
 }

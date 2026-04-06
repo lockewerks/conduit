@@ -16,11 +16,16 @@ struct BufferViewMessage {
     std::string text;
     std::string subtype;
     std::vector<slack::Reaction> reactions;
+    std::vector<slack::Attachment> attachments;
+    std::vector<slack::Block> blocks;
     std::vector<slack::SlackFile> files;
     std::string thread_ts;
     int reply_count = 0;
     bool is_edited = false;
     std::string ts;
+    std::string bot_id;
+    bool is_saved = false;
+    bool is_pinned = false;
 
     // for broadcast replies: the parent message we're replying to
     std::string reply_parent_nick;
@@ -74,14 +79,24 @@ public:
 
     // right-click context menu action - whoever owns us should check this each frame
     struct ContextAction {
-        enum Type { None, Copy, Reply, React, QuickReact, Edit, Delete } type = None;
+        enum Type { None, Copy, CopyLink, Reply, React, QuickReact, Edit, Delete,
+                     Save, Unsave, Pin, Unpin, RemindMe, MarkUnread, ViewProfile } type = None;
         std::string ts;
         std::string text;
         std::string emoji;    // for QuickReact
-        std::string user_id;  // for QuoteReply: original author
+        std::string user_id;  // for QuoteReply or ViewProfile
+        int remind_minutes = 0;
     };
     ContextAction lastContextAction() const { return last_context_action_; }
     void clearContextAction() { last_context_action_ = {}; }
+
+    // profile click feedback - user clicked a @mention or nick to view profile
+    struct ProfileClick {
+        bool clicked = false;
+        std::string user_id;
+    };
+    ProfileClick lastProfileClick() const { return last_profile_click_; }
+    void clearProfileClick() { last_profile_click_ = {}; }
 
     // tell us who we are so we can show/hide edit/delete
     void setSelfUserId(const std::string& id) { self_user_id_ = id; }
@@ -101,9 +116,12 @@ private:
     ThreadClick last_thread_click_;
     ImageClick last_image_click_;
     ContextAction last_context_action_;
+    ProfileClick last_profile_click_;
     std::string context_msg_ts_;
     std::string context_msg_user_;
     std::string context_msg_text_;
+    bool context_msg_saved_ = false;
+    bool context_msg_pinned_ = false;
     std::string self_user_id_;
 };
 

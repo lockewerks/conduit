@@ -29,6 +29,11 @@ private:
     std::optional<SlackEvent> handleTyping(const nlohmann::json& event);
     std::optional<SlackEvent> handleUserChange(const nlohmann::json& event);
     std::optional<SlackEvent> handlePin(const nlohmann::json& event, bool added);
+    std::optional<SlackEvent> handleBookmark(const nlohmann::json& event, bool added);
+    std::optional<SlackEvent> handleDnd(const nlohmann::json& event);
+    std::optional<SlackEvent> handleReminder(const nlohmann::json& event);
+    std::optional<SlackEvent> handleStar(const nlohmann::json& event, bool added);
+    std::optional<SlackEvent> handleUserGroupUpdate(const nlohmann::json& event);
 };
 
 } // namespace conduit::slack

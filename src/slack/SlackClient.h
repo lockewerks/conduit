@@ -9,10 +9,16 @@
 #include "cache/Database.h"
 #include "cache/ChannelCache.h"
 #include "cache/UserCache.h"
+#include "cache/BookmarkCache.h"
+#include "cache/ReminderCache.h"
+#include "cache/DraftStore.h"
+#include "cache/UserGroupCache.h"
+#include "cache/SavedItemCache.h"
 #include "app/Config.h"
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 namespace conduit::slack {
 
@@ -85,12 +91,59 @@ public:
     bool setStatus(const std::string& emoji, const std::string& text, int expiration_minutes = 0);
     bool setPresence(bool is_away);
 
+    // channel creation
+    std::optional<Channel> createChannel(const std::string& name, bool is_private = false);
+    bool archiveChannel(const ChannelId& id);
+
+    // bookmarks
+    std::vector<Bookmark> getBookmarks(const ChannelId& channel);
+    bool addBookmark(const ChannelId& channel, const std::string& title, const std::string& link);
+    bool removeBookmark(const ChannelId& channel, const std::string& bookmark_id);
+
+    // scheduled messages
+    bool scheduleMessage(const ChannelId& channel, const std::string& text, int64_t post_at,
+                         const std::optional<Timestamp>& thread_ts = std::nullopt);
+    std::vector<ScheduledMessage> getScheduledMessages(const ChannelId& channel = "");
+    bool deleteScheduledMessage(const ChannelId& channel, const std::string& scheduled_id);
+
+    // reminders
+    std::vector<Reminder> getReminders();
+    bool addReminder(const std::string& text, int64_t time, const std::string& user_or_channel = "");
+    bool deleteReminder(const std::string& reminder_id);
+    bool completeReminder(const std::string& reminder_id);
+
+    // user groups
+    std::vector<UserGroup> getUserGroups(bool include_users = true);
+
+    // DND
+    DndStatus getDndStatus();
+    bool setSnooze(int minutes);
+    bool endSnooze();
+    DndStatus cachedDndStatus() const { return dnd_status_; }
+
+    // saved items
+    std::vector<SavedItem> getSavedItems();
+    bool saveItem(const ChannelId& channel, const Timestamp& ts);
+    bool removeSavedItem(const ChannelId& channel, const Timestamp& ts);
+
+    // files listing
+    struct FileListResult { std::vector<SlackFile> files; int total = 0; };
+    FileListResult listFiles(const ChannelId& channel = "", int count = 50, int page = 1);
+
+    // user profile (full)
+    std::optional<User> getUserProfile(const UserId& id);
+
     // event queue (consumed by main thread)
     bool pollEvent(SlackEvent& event_out);
 
     // caches (for UI to read from)
     cache::ChannelCache& channelCache() { return channel_cache_; }
     cache::UserCache& userCache() { return user_cache_; }
+    cache::BookmarkCache& bookmarkCache() { return bookmark_cache_; }
+    cache::ReminderCache& reminderCache() { return reminder_cache_; }
+    cache::DraftStore& draftStore() { return draft_store_; }
+    cache::UserGroupCache& userGroupCache() { return user_group_cache_; }
+    cache::SavedItemCache& savedItemCache() { return saved_item_cache_; }
 
     std::string connectionState() const;
 
@@ -107,6 +160,13 @@ private:
     cache::Database& db_;
     cache::ChannelCache channel_cache_;
     cache::UserCache user_cache_;
+    cache::BookmarkCache bookmark_cache_;
+    cache::ReminderCache reminder_cache_;
+    cache::DraftStore draft_store_;
+    cache::UserGroupCache user_group_cache_;
+    cache::SavedItemCache saved_item_cache_;
+
+    DndStatus dnd_status_;
 
     ThreadSafeQueue<SlackEvent> event_queue_;
 
