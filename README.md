@@ -376,7 +376,11 @@ A: It builds and runs on all three platforms. The auto-login from browser only w
 
 ## License
 
-MIT. Do whatever you want with it. Credit is nice but not required. Complaints go to `/dev/null`.
+**GPLv3.** Free as in freedom, not as in "please resell my work on some app store."
+
+You can use it, modify it, distribute it, print it out and wallpaper your bathroom with it. But if you distribute a modified version, you must release your source code under GPLv3 too. No closing the source. No proprietary forks. No slapping a price tag on someone else's weekends.
+
+See [LICENSE](LICENSE) for the full legal text that your lawyer will pretend to read.
 
 ---
 
