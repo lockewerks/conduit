@@ -47,10 +47,13 @@ if(NOT TARGET CURL::libcurl)
     endif()
 endif()
 
-# SQLite3
+# SQLite3 — vcpkg uses unofficial-sqlite3, system uses SQLite3
 find_package(SQLite3 QUIET)
 if(NOT TARGET SQLite3::SQLite3)
-    if(PkgConfig_FOUND)
+    find_package(unofficial-sqlite3 CONFIG QUIET)
+    if(TARGET unofficial::sqlite3::sqlite3)
+        add_library(SQLite3::SQLite3 ALIAS unofficial::sqlite3::sqlite3)
+    elseif(PkgConfig_FOUND)
         pkg_check_modules(SQLITE3_PC REQUIRED IMPORTED_TARGET sqlite3)
         add_library(SQLite3::SQLite3 ALIAS PkgConfig::SQLITE3_PC)
     else()
