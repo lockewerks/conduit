@@ -294,56 +294,53 @@ void Application::loadConfig() {
 void Application::connectToSlack() {
     auto& orgs = config_.get().orgs;
 
-    // check keychain for a previously saved token
+    // check config for explicit token first
     std::string user_token;
     std::string app_token;
     std::string org_name = "Slack";
+    std::string d_cookie;
 
     if (!orgs.empty()) {
         auto& org = orgs[0];
         org_name = org.name;
         user_token = org.user_token;
         app_token = org.app_token;
+        d_cookie = org.d_cookie;
     }
 
-    // try the keychain if no token in config
-    if (user_token.empty()) {
-        auto stored = KeychainStore::retrieve("conduit", "user_token");
-        if (stored) {
-            user_token = *stored;
-            LOG_INFO("loaded token from keychain");
-        }
-    }
-    // xoxc tokens need a d cookie
-    std::string d_cookie;
-    if (!orgs.empty()) d_cookie = orgs[0].d_cookie;
-    if (d_cookie.empty()) {
-        auto stored = KeychainStore::retrieve("conduit", "d_cookie");
-        if (stored) d_cookie = *stored;
+    // config has an explicit token — use it directly, no chooser needed
+    if (!user_token.empty()) {
+        BrowserCredential cred;
+        cred.token = user_token;
+        cred.cookie = d_cookie;
+        cred.team_name = org_name;
+        connectWithCredential(cred);
+        return;
     }
 
-    // no token? try to steal it from a Chromium browser before asking the user
-    if (user_token.empty()) {
-        LOG_INFO("no token in config or keychain, scanning browsers...");
-        ui_.statusBar().setConnectionState("scanning browsers...");
+    // try the keychain for a previously chosen team
+    auto stored_token = KeychainStore::retrieve("conduit", "user_token");
+    auto stored_cookie = KeychainStore::retrieve("conduit", "d_cookie");
+    auto stored_team = KeychainStore::retrieve("conduit", "team_name");
 
-        auto creds = BrowserCredentials::scan();
-        if (!creds.empty()) {
-            auto& best = creds[0];
-            user_token = best.token;
-            d_cookie = best.cookie;
-            LOG_INFO("swiped credentials from " + best.browser_name);
-
-            // save to keychain so we don't have to do this again
-            KeychainStore::store("conduit", "user_token", user_token);
-            if (!d_cookie.empty()) {
-                KeychainStore::store("conduit", "d_cookie", d_cookie);
-            }
-        }
+    if (stored_token) {
+        LOG_INFO("loaded token from keychain");
+        BrowserCredential cred;
+        cred.token = *stored_token;
+        cred.cookie = stored_cookie.value_or("");
+        cred.team_name = stored_team.value_or("Slack");
+        connectWithCredential(cred);
+        return;
     }
 
-    // still no token? fall back to manual paste
-    if (user_token.empty()) {
+    // no stored credentials — scan browsers
+    LOG_INFO("no token in config or keychain, scanning browsers...");
+    ui_.statusBar().setConnectionState("scanning browsers...");
+
+    auto creds = BrowserCredentials::scan();
+
+    if (creds.empty()) {
+        // nothing found — fall back to manual paste
         LOG_INFO("no token found anywhere, prompting user to paste one");
         ui_.statusBar().setConnectionState("paste your token");
         ui_.statusBar().setOrgName("Conduit");
@@ -352,8 +349,29 @@ void Application::connectToSlack() {
         return;
     }
 
-    // we have a token (from config, keychain, or a previous OAuth).
-    // set up database and connect.
+    if (creds.size() == 1) {
+        // single workspace — use it directly
+        auto& cred = creds[0];
+        LOG_INFO("swiped credentials for " + cred.team_name + " from " + cred.browser_name);
+        KeychainStore::store("conduit", "user_token", cred.token);
+        if (!cred.cookie.empty()) KeychainStore::store("conduit", "d_cookie", cred.cookie);
+        KeychainStore::store("conduit", "team_name", cred.team_name);
+        connectWithCredential(cred);
+        return;
+    }
+
+    // multiple workspaces found — show the chooser
+    LOG_INFO("found " + std::to_string(creds.size()) + " workspaces, showing chooser");
+    discovered_teams_ = std::move(creds);
+    selected_team_index_ = 0;
+    auth_state_ = AuthState::WaitingForTeamChoice;
+    ui_.statusBar().setConnectionState("choose workspace");
+    ui_.statusBar().setOrgName("Conduit");
+}
+
+void Application::connectWithCredential(const BrowserCredential& cred) {
+    std::string org_name = cred.team_name.empty() ? "Slack" : cred.team_name;
+
     std::string data_dir = platform::getDataDir();
     platform::ensureDir(data_dir);
     db_ = std::make_unique<cache::Database>();
@@ -363,16 +381,15 @@ void Application::connectToSlack() {
 
     OrgConfig resolved;
     resolved.name = org_name;
-    resolved.user_token = user_token;
-    resolved.app_token = app_token;
-    resolved.d_cookie = d_cookie;
+    resolved.user_token = cred.token;
+    resolved.d_cookie = cred.cookie;
 
     client_ = std::make_unique<slack::SlackClient>(resolved, *db_);
 
-    resolved_token_ = user_token;
+    resolved_token_ = cred.token;
     ui_.bufferView().setImageRenderer(&image_renderer_);
     ui_.bufferView().setGifRenderer(&gif_renderer_);
-    ui_.bufferView().setAuthToken(user_token);
+    ui_.bufferView().setAuthToken(cred.token);
     ui_.bufferView().setSelfUserId(client_->selfUserId());
 
     // thread panel needs display name resolution and reply handling
@@ -388,12 +405,12 @@ void Application::connectToSlack() {
     });
 
     // xoxc tokens need the d cookie on image/gif downloads too
-    if (!d_cookie.empty()) {
-        image_renderer_.setCookie(d_cookie);
-        gif_renderer_.setCookie(d_cookie);
-        emoji_renderer_.setCookie(d_cookie);
+    if (!cred.cookie.empty()) {
+        image_renderer_.setCookie(cred.cookie);
+        gif_renderer_.setCookie(cred.cookie);
+        emoji_renderer_.setCookie(cred.cookie);
     }
-    emoji_renderer_.setAuthToken(user_token);
+    emoji_renderer_.setAuthToken(cred.token);
     emoji_renderer_.setThreadPool(pool_.get());
 
     // pass emoji renderer to UI components
@@ -415,6 +432,63 @@ void Application::connectToSlack() {
             LOG_ERROR("failed to connect to " + name);
         }
     });
+}
+
+void Application::renderTeamChooser() {
+    if (auth_state_ != AuthState::WaitingForTeamChoice) return;
+
+    ImVec2 center = ImVec2(window_width_ * 0.5f, window_height_ * 0.5f);
+    ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(400, 0), ImGuiCond_Always);
+
+    ImGui::Begin("Choose Workspace", nullptr,
+                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove);
+
+    ImGui::TextWrapped("Multiple Slack workspaces found. Pick one:");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    for (int i = 0; i < (int)discovered_teams_.size(); i++) {
+        auto& team = discovered_teams_[i];
+        std::string label = team.team_name;
+        if (!team.team_domain.empty()) {
+            label += "  (" + team.team_domain + ".slack.com)";
+        }
+
+        if (ImGui::Selectable(label.c_str(), selected_team_index_ == i,
+                               ImGuiSelectableFlags_None, ImVec2(0, 28))) {
+            selected_team_index_ = i;
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (ImGui::Button("Connect", ImVec2(120, 0)) ||
+        ImGui::IsKeyPressed(ImGuiKey_Enter)) {
+        auto& chosen = discovered_teams_[selected_team_index_];
+        LOG_INFO("user chose workspace: " + chosen.team_name);
+
+        // save to keychain so next launch goes straight in
+        KeychainStore::store("conduit", "user_token", chosen.token);
+        if (!chosen.cookie.empty()) KeychainStore::store("conduit", "d_cookie", chosen.cookie);
+        KeychainStore::store("conduit", "team_name", chosen.team_name);
+
+        auth_state_ = AuthState::None;
+        connectWithCredential(chosen);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Paste Token Instead", ImVec2(160, 0))) {
+        auth_state_ = AuthState::WaitingForToken;
+        discovered_teams_.clear();
+        ui_.statusBar().setConnectionState("paste your token");
+        ui_.inputBar().setChannelName("paste xoxc- token");
+    }
+
+    ImGui::End();
 }
 
 // ---- Slash commands ----
@@ -573,9 +647,10 @@ void Application::registerCommands() {
 
     commands_.registerCommand("reauth", "Clear cached credentials and re-scan browser", [this](const input::ParsedCommand&) {
         LOG_INFO("clearing cached credentials...");
-        // nuke the keychain entries so connectToSlack() will rescan the browser
+        // nuke all keychain entries so connectToSlack() will rescan the browser
         KeychainStore::remove("conduit", "user_token");
         KeychainStore::remove("conduit", "d_cookie");
+        KeychainStore::remove("conduit", "team_name");
 
         // disconnect the current session
         if (client_) {
@@ -588,7 +663,7 @@ void Application::registerCommands() {
         ui_.statusBar().setConnectionState("re-authenticating...");
         LOG_INFO("credentials cleared, rescanning browsers...");
 
-        // reconnect with fresh credentials
+        // reconnect — will rescan browser and show team chooser if multiple found
         connectToSlack();
     });
 
@@ -1121,6 +1196,9 @@ void Application::run() {
         ImGui::NewFrame();
 
         ui_.render();
+
+        // team chooser overlay (shown when multiple workspaces found)
+        renderTeamChooser();
 
         // right-click context menu actions
         if (ui_.wantsPasteImage()) {

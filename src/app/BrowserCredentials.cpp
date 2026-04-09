@@ -108,10 +108,118 @@ std::vector<BrowserCredentials::BrowserProfile> BrowserCredentials::findChromium
     return profiles;
 }
 
+std::vector<BrowserCredential> BrowserCredentials::extractTeams(
+    const std::string& local_storage_path, const std::string& browser_name) {
+    // the localConfig_v2 JSON blob lives in LevelDB's .ldb and .log files.
+    // it contains a "teams" object keyed by team ID, each with a "token" field.
+    // we scan the raw bytes for the JSON blob and parse out per-team credentials.
+    std::vector<BrowserCredential> results;
+
+    try {
+        if (!fs::exists(local_storage_path) || !fs::is_directory(local_storage_path))
+            return results;
+
+        for (auto& entry : fs::directory_iterator(local_storage_path)) {
+            try {
+                std::string ext = entry.path().extension().string();
+                if (ext != ".ldb" && ext != ".log") continue;
+
+                std::ifstream file(entry.path(), std::ios::binary);
+                if (!file.is_open()) continue;
+
+                std::string content((std::istreambuf_iterator<char>(file)),
+                                     std::istreambuf_iterator<char>());
+
+                // look for the teams JSON structure. the localConfig_v2 blob
+                // contains "orderedTeamIds" which is a reliable marker.
+                size_t marker = content.find("orderedTeamIds");
+                if (marker == std::string::npos) continue;
+
+                // walk backward to find the opening brace of the JSON blob.
+                // LevelDB values can have binary prefix bytes, so we look for
+                // the first '{' that starts a valid JSON object.
+                size_t json_start = marker;
+                int depth = 0;
+                while (json_start > 0) {
+                    json_start--;
+                    if (content[json_start] == '{') {
+                        // try parsing from here
+                        depth++;
+                        break;
+                    }
+                }
+
+                // now find the matching closing brace
+                size_t json_end = json_start;
+                depth = 0;
+                bool in_string = false;
+                bool escaped = false;
+                for (size_t i = json_start; i < content.size(); i++) {
+                    char c = content[i];
+                    if (escaped) { escaped = false; continue; }
+                    if (c == '\\' && in_string) { escaped = true; continue; }
+                    if (c == '"') { in_string = !in_string; continue; }
+                    if (in_string) continue;
+                    if (c == '{') depth++;
+                    if (c == '}') {
+                        depth--;
+                        if (depth == 0) { json_end = i + 1; break; }
+                    }
+                }
+
+                if (json_end <= json_start) continue;
+
+                std::string json_str = content.substr(json_start, json_end - json_start);
+
+                // strip any leading non-ASCII prefix bytes that LevelDB may have added
+                while (!json_str.empty() && json_str[0] != '{') {
+                    json_str.erase(json_str.begin());
+                }
+
+                nlohmann::json config;
+                try {
+                    config = nlohmann::json::parse(json_str);
+                } catch (...) {
+                    continue;
+                }
+
+                if (!config.contains("teams") || !config["teams"].is_object()) continue;
+
+                LOG_INFO("parsed localConfig_v2 with " +
+                         std::to_string(config["teams"].size()) + " teams");
+
+                for (auto& [team_id, team_data] : config["teams"].items()) {
+                    if (!team_data.is_object()) continue;
+
+                    std::string token = team_data.value("token", "");
+                    if (token.empty() || token.find("xoxc-") != 0) continue;
+
+                    BrowserCredential cred;
+                    cred.browser_name = browser_name;
+                    cred.token = token;
+                    cred.team_id = team_id;
+                    cred.team_name = team_data.value("name", team_id);
+                    cred.team_url = team_data.value("url", "");
+                    cred.team_domain = team_data.value("domain", "");
+
+                    LOG_INFO("found team: " + cred.team_name + " (" + cred.team_id + ")");
+                    results.push_back(std::move(cred));
+                }
+
+                if (!results.empty()) return results;
+
+            } catch (...) {
+                continue;
+            }
+        }
+    } catch (...) {}
+
+    return results;
+}
+
 std::optional<std::string> BrowserCredentials::extractToken(const std::string& local_storage_path) {
-    // scan .ldb and .log files in the leveldb directory for the xoxc- token.
-    // levelDB files contain raw key-value data — the token is stored as part
-    // of the localConfig_v2 JSON blob, unencrypted, in plaintext. thanks google.
+    // legacy fallback: scan for a bare xoxc- token when the v2 JSON parse fails.
+    // this handles older single-workspace Slack installs.
     try {
         if (!fs::exists(local_storage_path) || !fs::is_directory(local_storage_path))
             return std::nullopt;
@@ -144,12 +252,10 @@ std::optional<std::string> BrowserCredentials::extractToken(const std::string& l
                     return token;
                 }
             } catch (...) {
-                continue; // skip files we can't read
+                continue;
             }
         }
-    } catch (...) {
-        // directory iteration failed (permissions, locked files, etc)
-    }
+    } catch (...) {}
 
     return std::nullopt;
 }
@@ -371,15 +477,39 @@ std::vector<BrowserCredential> BrowserCredentials::scan() {
                         "/" + profile + "/Local Storage/leveldb";
 #endif
 
+                    // try the v2 JSON format first (multi-workspace)
+                    auto teams = extractTeams(ls_path, name);
+                    if (!teams.empty()) {
+                        // got teams from v2 format — fetch the shared cookie
+                        auto cookie = extractCookie(path);
+                        std::string cookie_val = cookie.value_or("");
+
+                        for (auto& team : teams) {
+                            team.cookie = cookie_val;
+                            results.push_back(std::move(team));
+                        }
+                        LOG_INFO("got " + std::to_string(results.size()) +
+                                 " workspaces from " + name + " (" + profile + ")");
+                        break;
+                    }
+
+                    // fallback: old single-token format
                     auto token = extractToken(ls_path);
                     if (!token) continue;
 
                     auto cookie = extractCookie(path);
 
-                    results.push_back({name, *token, cookie.value_or("")});
-                    LOG_INFO("got credentials from " + name + " (" + profile + ")");
+                    BrowserCredential cred;
+                    cred.browser_name = name;
+                    cred.token = *token;
+                    cred.cookie = cookie.value_or("");
+                    cred.team_name = "Slack";
+                    results.push_back(std::move(cred));
+                    LOG_INFO("got credentials from " + name + " (" + profile + ") [legacy]");
                     break;
                 }
+
+                if (!results.empty()) break; // found what we need
             } catch (const std::exception& e) {
                 LOG_WARN("error scanning " + name + ": " + e.what());
             } catch (...) {

@@ -12,6 +12,7 @@
 #include "render/ImageRenderer.h"
 #include "render/GifRenderer.h"
 #include "render/EmojiRenderer.h"
+#include "app/BrowserCredentials.h"
 
 #include <SDL.h>
 #include <chrono>
@@ -99,8 +100,14 @@ private:
     notify::NotificationManager notifications_;
 
     // token paste flow: waiting_for_token -> waiting_for_cookie -> connect
-    enum class AuthState { None, WaitingForToken, WaitingForCookie } auth_state_ = AuthState::None;
+    // team chooser: WaitingForTeamChoice shown when multiple workspaces found
+    enum class AuthState { None, WaitingForToken, WaitingForCookie, WaitingForTeamChoice } auth_state_ = AuthState::None;
     std::string pending_token_;
+    std::vector<BrowserCredential> discovered_teams_;
+    int selected_team_index_ = 0;
+
+    void renderTeamChooser();
+    void connectWithCredential(const BrowserCredential& cred);
 
     // resolved auth token for image/gif downloads
     std::string resolved_token_;

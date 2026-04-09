@@ -14,11 +14,16 @@ struct BrowserCredential {
     std::string browser_name;
     std::string token;    // xoxc-...
     std::string cookie;   // d= session cookie (decrypted)
+    std::string team_id;  // T0ARN79V7S
+    std::string team_name; // "Specter Point Intelligence"
+    std::string team_url;  // "https://workspace.slack.com/"
+    std::string team_domain; // "workspace"
 };
 
 class BrowserCredentials {
 public:
     // scan all known Chromium browsers and return any Slack credentials found
+    // returns one entry per workspace (team) found
     static std::vector<BrowserCredential> scan();
 
 private:
@@ -29,7 +34,11 @@ private:
 
     static std::vector<BrowserProfile> findChromiumProfiles();
 
-    // scan LevelDB files in localStorage for the xoxc- token
+    // scan LevelDB files for the localConfig_v2 JSON and extract per-team tokens
+    static std::vector<BrowserCredential> extractTeams(const std::string& local_storage_path,
+                                                        const std::string& browser_name);
+
+    // legacy fallback: scan for a bare xoxc- token (old single-workspace format)
     static std::optional<std::string> extractToken(const std::string& local_storage_path);
 
     // read the d= cookie from the Cookies SQLite DB and decrypt with DPAPI
