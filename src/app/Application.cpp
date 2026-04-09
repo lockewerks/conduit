@@ -571,6 +571,27 @@ void Application::registerCommands() {
         pool_->enqueue([this]() { client_->connect(); });
     });
 
+    commands_.registerCommand("reauth", "Clear cached credentials and re-scan browser", [this](const input::ParsedCommand&) {
+        LOG_INFO("clearing cached credentials...");
+        // nuke the keychain entries so connectToSlack() will rescan the browser
+        KeychainStore::remove("conduit", "user_token");
+        KeychainStore::remove("conduit", "d_cookie");
+
+        // disconnect the current session
+        if (client_) {
+            client_->disconnect();
+            client_.reset();
+        }
+        msg_cache_.reset();
+        db_.reset();
+
+        ui_.statusBar().setConnectionState("re-authenticating...");
+        LOG_INFO("credentials cleared, rescanning browsers...");
+
+        // reconnect with fresh credentials
+        connectToSlack();
+    });
+
     commands_.registerCommand("pin", "Pin selected message", [this](const input::ParsedCommand&) {
         if (!client_ || active_channel_.empty()) return;
         auto msgs = msg_cache_->get(active_channel_, 1);
