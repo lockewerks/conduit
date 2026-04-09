@@ -20,6 +20,139 @@
 
 namespace fs = std::filesystem;
 
+// LevelDB stores data blocks with Snappy compression. Snappy is a simple
+// format: the decompressed length as a varint, then a series of literals
+// and copy commands. we need to decompress to get the actual JSON strings
+// because the compression back-references fragment tokens across blocks.
+static std::string snappyDecompress(const uint8_t* data, size_t len) {
+    if (len == 0) return "";
+    size_t pos = 0;
+
+    // read decompressed length as varint
+    uint32_t dec_len = 0;
+    int shift = 0;
+    while (pos < len) {
+        uint8_t b = data[pos++];
+        dec_len |= (uint32_t)(b & 0x7f) << shift;
+        if ((b & 0x80) == 0) break;
+        shift += 7;
+    }
+
+    if (dec_len > 64 * 1024 * 1024) return ""; // sanity check: 64MB max
+    std::string output;
+    output.reserve(dec_len);
+
+    while (pos < len && output.size() < dec_len) {
+        uint8_t tag = data[pos++];
+        int type = tag & 0x03;
+
+        if (type == 0) {
+            // literal
+            uint32_t lit_len = (tag >> 2) + 1;
+            if (lit_len == 61 && pos < len) {
+                lit_len = data[pos++] + 1;
+            } else if (lit_len == 62 && pos + 1 < len) {
+                lit_len = data[pos] | (data[pos+1] << 8);
+                pos += 2;
+                lit_len += 1;
+            } else if (lit_len == 63 && pos + 2 < len) {
+                lit_len = data[pos] | (data[pos+1] << 8) | (data[pos+2] << 16);
+                pos += 3;
+                lit_len += 1;
+            } else if (lit_len == 64 && pos + 3 < len) {
+                lit_len = data[pos] | (data[pos+1] << 8) | (data[pos+2] << 16) | (data[pos+3] << 24);
+                pos += 4;
+                lit_len += 1;
+            }
+            if (pos + lit_len > len) break;
+            output.append(reinterpret_cast<const char*>(data + pos), lit_len);
+            pos += lit_len;
+        } else if (type == 1) {
+            // copy with 1-byte offset
+            uint32_t copy_len = ((tag >> 2) & 0x07) + 4;
+            if (pos >= len) break;
+            uint32_t offset = ((tag >> 5) << 8) | data[pos++];
+            if (offset == 0 || offset > output.size()) break;
+            for (uint32_t i = 0; i < copy_len; i++) {
+                output += output[output.size() - offset];
+            }
+        } else if (type == 2) {
+            // copy with 2-byte offset
+            uint32_t copy_len = (tag >> 2) + 1;
+            if (pos + 1 >= len) break;
+            uint32_t offset = data[pos] | (data[pos+1] << 8);
+            pos += 2;
+            if (offset == 0 || offset > output.size()) break;
+            for (uint32_t i = 0; i < copy_len; i++) {
+                output += output[output.size() - offset];
+            }
+        } else {
+            // copy with 4-byte offset
+            uint32_t copy_len = (tag >> 2) + 1;
+            if (pos + 3 >= len) break;
+            uint32_t offset = data[pos] | (data[pos+1] << 8) | (data[pos+2] << 16) | (data[pos+3] << 24);
+            pos += 4;
+            if (offset == 0 || offset > output.size()) break;
+            for (uint32_t i = 0; i < copy_len; i++) {
+                output += output[output.size() - offset];
+            }
+        }
+    }
+
+    return output;
+}
+
+// strip LevelDB block framing from a .ldb file and decompress each block.
+// LevelDB .ldb (sstable) files have data blocks followed by index/meta blocks.
+// each block ends with a 1-byte compression type + 4-byte CRC.
+// we try to decompress each data region that looks like it might contain our JSON.
+static std::string decompressLevelDBFile(const std::string& content) {
+    // simple approach: find the localConfig_v2 region in the raw bytes,
+    // then try to Snappy-decompress overlapping chunks around it.
+    // LevelDB data blocks are typically 4KB and start with key-value pairs.
+
+    // first, try treating the entire file region around localConfig_v2
+    // as Snappy-compressed data. find the block that contains it.
+    size_t config_pos = content.find("ocalConfig_v2");
+    if (config_pos == std::string::npos) return "";
+
+    // scan backward from config_pos to find the block start.
+    // LevelDB blocks are aligned and typically start with a restart array.
+    // the simplest approach: try decompressing starting from various positions
+    // before the config marker.
+
+    // actually, let's just extract printable strings and reassemble.
+    // the Snappy back-references copy from earlier in the output,
+    // so we need proper decompression. try decompressing from the
+    // start of the data region.
+
+    // LevelDB .ldb files: the first data block starts right at the beginning.
+    // block format: [entries][restart_points][num_restarts][compression_type][crc32]
+    // for a Snappy-compressed block, compression_type = 0x01
+
+    // try to find Snappy blocks by looking for valid Snappy headers.
+    // a Snappy compressed block starts with the uncompressed length as a varint.
+    std::string result;
+
+    // try decompressing the chunk that contains our data
+    // scan for potential Snappy block starts near the config data
+    for (size_t try_start = (config_pos > 8192) ? config_pos - 8192 : 0;
+         try_start < config_pos && try_start < content.size(); try_start += 64) {
+
+        std::string decompressed = snappyDecompress(
+            reinterpret_cast<const uint8_t*>(content.data() + try_start),
+            std::min(content.size() - try_start, (size_t)131072));
+
+        if (decompressed.size() > 100 && decompressed.find("\"teams\"") != std::string::npos) {
+            if (decompressed.size() > result.size()) {
+                result = decompressed;
+            }
+        }
+    }
+
+    return result;
+}
+
 // base64 decode (for Chrome's Local State encryption key)
 static std::vector<uint8_t> base64Decode(const std::string& input) {
     static const std::string chars =
@@ -110,9 +243,13 @@ std::vector<BrowserCredentials::BrowserProfile> BrowserCredentials::findChromium
 
 std::vector<BrowserCredential> BrowserCredentials::extractTeams(
     const std::string& local_storage_path, const std::string& browser_name) {
-    // the localConfig_v2 JSON blob lives in LevelDB's .ldb and .log files.
-    // it contains a "teams" object keyed by team ID, each with a "token" field.
-    // we scan the raw bytes for the JSON blob and parse out per-team credentials.
+    // LevelDB uses Snappy compression, so the localConfig_v2 JSON is NOT stored
+    // as a contiguous readable string. the data is broken up with compression
+    // back-reference markers sprinkled throughout.
+    //
+    // strategy: scan the raw bytes for team IDs (T[A-Z0-9]{8,}) near
+    // "name" fields and xoxc- tokens. each team's data block contains
+    // its ID, name, domain, and token in close proximity even when compressed.
     std::vector<BrowserCredential> results;
 
     try {
@@ -130,81 +267,205 @@ std::vector<BrowserCredential> BrowserCredentials::extractTeams(
                 std::string content((std::istreambuf_iterator<char>(file)),
                                      std::istreambuf_iterator<char>());
 
-                // look for the teams JSON structure. the localConfig_v2 blob
-                // contains "orderedTeamIds" which is a reliable marker.
-                size_t marker = content.find("orderedTeamIds");
-                if (marker == std::string::npos) continue;
+                // must have localConfig_v2 and at least one xoxc token
+                if (content.find("ocalConfig_v2") == std::string::npos) continue;
+                if (content.find("xoxc-") == std::string::npos) continue;
 
-                // walk backward to find the opening brace of the JSON blob.
-                // LevelDB values can have binary prefix bytes, so we look for
-                // the first '{' that starts a valid JSON object.
-                size_t json_start = marker;
-                int depth = 0;
-                while (json_start > 0) {
-                    json_start--;
-                    if (content[json_start] == '{') {
-                        // try parsing from here
-                        depth++;
-                        break;
+                LOG_INFO("found localConfig_v2 with tokens in " +
+                         entry.path().filename().string());
+
+                // LevelDB uses Snappy compression which fragments JSON strings
+                // with binary back-reference bytes. try to decompress first for
+                // clean JSON parsing, then fall back to raw-byte extraction.
+                std::string decompressed = decompressLevelDBFile(content);
+
+                if (!decompressed.empty() && decompressed.find("xoxc-") != std::string::npos) {
+                    LOG_INFO("successfully decompressed LevelDB block (" +
+                             std::to_string(decompressed.size()) + " bytes)");
+
+                    // find the localConfig_v2 JSON in the decompressed data
+                    size_t json_start = decompressed.find("{\"teams\"");
+                    if (json_start != std::string::npos) {
+                        // walk forward to find the end of the JSON object
+                        int depth = 0;
+                        bool in_str = false;
+                        bool esc = false;
+                        size_t json_end = json_start;
+                        for (size_t i = json_start; i < decompressed.size(); i++) {
+                            char c = decompressed[i];
+                            if (esc) { esc = false; continue; }
+                            if (c == '\\' && in_str) { esc = true; continue; }
+                            if (c == '"') { in_str = !in_str; continue; }
+                            if (in_str) continue;
+                            if (c == '{') depth++;
+                            if (c == '}') { depth--; if (depth == 0) { json_end = i + 1; break; } }
+                        }
+
+                        if (json_end > json_start) {
+                            std::string json_str = decompressed.substr(json_start, json_end - json_start);
+                            try {
+                                auto config = nlohmann::json::parse(json_str);
+                                if (config.contains("teams") && config["teams"].is_object()) {
+                                    for (auto& [team_id, team_data] : config["teams"].items()) {
+                                        if (!team_data.is_object()) continue;
+                                        std::string token = team_data.value("token", "");
+                                        if (token.find("xoxc-") != 0) continue;
+
+                                        BrowserCredential cred;
+                                        cred.browser_name = browser_name;
+                                        cred.token = token;
+                                        cred.team_id = team_id;
+                                        cred.team_name = team_data.value("name", team_id);
+                                        cred.team_url = team_data.value("url", "");
+                                        cred.team_domain = team_data.value("domain", "");
+
+                                        LOG_INFO("found team: " + cred.team_name +
+                                                 " (" + cred.team_id + ") via decompression");
+                                        results.push_back(std::move(cred));
+                                    }
+                                }
+                            } catch (const std::exception& e) {
+                                LOG_WARN("JSON parse failed after decompression: " + std::string(e.what()));
+                            }
+                        }
                     }
                 }
 
-                // now find the matching closing brace
-                size_t json_end = json_start;
-                depth = 0;
-                bool in_string = false;
-                bool escaped = false;
-                for (size_t i = json_start; i < content.size(); i++) {
-                    char c = content[i];
-                    if (escaped) { escaped = false; continue; }
-                    if (c == '\\' && in_string) { escaped = true; continue; }
-                    if (c == '"') { in_string = !in_string; continue; }
-                    if (in_string) continue;
-                    if (c == '{') depth++;
-                    if (c == '}') {
-                        depth--;
-                        if (depth == 0) { json_end = i + 1; break; }
+                // if decompression didn't work, fall back to raw-byte scanning.
+                // strategy: find team IDs (T + uppercase+digits), then for each
+                // team block, find the token by looking for "xoxc-" literal or
+                // a long digit-starting run (Snappy back-references the "xoxc-").
+                if (results.empty()) {
+                    LOG_INFO("falling back to raw-byte token extraction");
+
+                    // find the config section
+                    size_t config_start = content.find("ocalConfig_v2");
+                    if (config_start == std::string::npos) continue;
+
+                    // extract a region around the config (up to 10KB)
+                    std::string region = content.substr(
+                        config_start, std::min(content.size() - config_start, (size_t)10000));
+
+                    // find all team IDs: T followed by uppercase/digits, 8-11 chars
+                    struct TeamBlock { std::string id; size_t pos; size_t end; };
+                    std::vector<TeamBlock> team_blocks;
+
+                    for (size_t i = 0; i + 8 < region.size(); i++) {
+                        if (region[i] != 'T') continue;
+                        // check if this looks like a team ID
+                        size_t j = i + 1;
+                        while (j < region.size() && j < i + 12 &&
+                               (std::isupper(static_cast<unsigned char>(region[j])) ||
+                                std::isdigit(static_cast<unsigned char>(region[j])))) {
+                            j++;
+                        }
+                        size_t id_len = j - i;
+                        if (id_len >= 8 && id_len <= 12) {
+                            std::string tid = region.substr(i, id_len);
+                            // avoid duplicates and false positives
+                            bool dup = false;
+                            for (auto& tb : team_blocks) {
+                                if (tb.id == tid) { dup = true; break; }
+                            }
+                            if (!dup) {
+                                team_blocks.push_back({tid, i, 0});
+                            }
+                        }
+                    }
+
+                    // set end boundaries for each team block
+                    for (size_t i = 0; i < team_blocks.size(); i++) {
+                        team_blocks[i].end = (i + 1 < team_blocks.size())
+                            ? team_blocks[i + 1].pos : region.size();
+                    }
+
+                    LOG_INFO("found " + std::to_string(team_blocks.size()) + " team ID blocks");
+
+                    for (auto& tb : team_blocks) {
+                        std::string block = region.substr(tb.pos, tb.end - tb.pos);
+
+                        BrowserCredential cred;
+                        cred.browser_name = browser_name;
+                        cred.team_id = tb.id;
+
+                        // find token: look for "xoxc-" literal first
+                        std::string token;
+                        size_t xoxc_pos = block.find("xoxc-");
+                        if (xoxc_pos != std::string::npos) {
+                            // reconstruct by skipping non-printable bytes
+                            for (size_t i = xoxc_pos; i < block.size() && i < xoxc_pos + 500; i++) {
+                                unsigned char c = static_cast<unsigned char>(block[i]);
+                                if (std::isalnum(c) || c == '-') token += static_cast<char>(c);
+                                else if (c == '"') break;
+                            }
+                        }
+
+                        // if no literal "xoxc-", look for a long digit run
+                        // (the "xoxc-" prefix was Snappy back-referenced)
+                        if (token.size() < 40) {
+                            token.clear();
+                            for (size_t i = 0; i + 5 < block.size(); i++) {
+                                unsigned char c = static_cast<unsigned char>(block[i]);
+                                if (!std::isdigit(c)) continue;
+                                // check for a long enough digit run ahead
+                                std::string candidate;
+                                for (size_t j = i; j < block.size() && j < i + 500; j++) {
+                                    unsigned char cc = static_cast<unsigned char>(block[j]);
+                                    if (std::isalnum(cc) || cc == '-') {
+                                        candidate += static_cast<char>(cc);
+                                    } else if (cc == '"') {
+                                        break;
+                                    }
+                                    // skip compression bytes
+                                }
+                                if (candidate.size() > 60 && candidate.find('-') != std::string::npos) {
+                                    token = "xoxc-" + candidate;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (token.size() < 40) continue; // not a real token
+
+                        cred.token = token;
+
+                        // find team name: "name":"..."
+                        size_t name_pos = block.find("\"name\":\"");
+                        if (name_pos != std::string::npos) {
+                            size_t vs = name_pos + 8;
+                            for (size_t i = vs; i < block.size() && i < vs + 200; i++) {
+                                unsigned char c = static_cast<unsigned char>(block[i]);
+                                if (c == '"') break;
+                                if (c >= 0x20 && c < 0x7f) cred.team_name += static_cast<char>(c);
+                            }
+                        }
+
+                        // name might be compressed — fall back to team_id
+                        if (cred.team_name.empty()) cred.team_name = tb.id;
+
+                        // deduplicate
+                        bool dup = false;
+                        for (auto& r : results) {
+                            if (r.token == cred.token) { dup = true; break; }
+                        }
+                        if (!dup) {
+                            LOG_INFO("extracted team: " + cred.team_name +
+                                     " (" + cred.team_id + ") from " + browser_name);
+                            results.push_back(std::move(cred));
+                        }
                     }
                 }
 
-                if (json_end <= json_start) continue;
-
-                std::string json_str = content.substr(json_start, json_end - json_start);
-
-                // strip any leading non-ASCII prefix bytes that LevelDB may have added
-                while (!json_str.empty() && json_str[0] != '{') {
-                    json_str.erase(json_str.begin());
+                // deduplicate by token (same token might appear in multiple blocks)
+                std::vector<BrowserCredential> unique;
+                for (auto& r : results) {
+                    bool dup = false;
+                    for (auto& u : unique) {
+                        if (u.token == r.token) { dup = true; break; }
+                    }
+                    if (!dup) unique.push_back(std::move(r));
                 }
-
-                nlohmann::json config;
-                try {
-                    config = nlohmann::json::parse(json_str);
-                } catch (...) {
-                    continue;
-                }
-
-                if (!config.contains("teams") || !config["teams"].is_object()) continue;
-
-                LOG_INFO("parsed localConfig_v2 with " +
-                         std::to_string(config["teams"].size()) + " teams");
-
-                for (auto& [team_id, team_data] : config["teams"].items()) {
-                    if (!team_data.is_object()) continue;
-
-                    std::string token = team_data.value("token", "");
-                    if (token.empty() || token.find("xoxc-") != 0) continue;
-
-                    BrowserCredential cred;
-                    cred.browser_name = browser_name;
-                    cred.token = token;
-                    cred.team_id = team_id;
-                    cred.team_name = team_data.value("name", team_id);
-                    cred.team_url = team_data.value("url", "");
-                    cred.team_domain = team_data.value("domain", "");
-
-                    LOG_INFO("found team: " + cred.team_name + " (" + cred.team_id + ")");
-                    results.push_back(std::move(cred));
-                }
+                results = std::move(unique);
 
                 if (!results.empty()) return results;
 
@@ -469,6 +730,10 @@ std::vector<BrowserCredential> BrowserCredentials::scan() {
                     "Default", "Profile 1", "Profile 2", "Profile 3"
                 };
 
+                // the d cookie is per-browser (shared across all workspaces)
+                auto cookie = extractCookie(path);
+                std::string cookie_val = cookie.value_or("");
+
                 for (auto& profile : profile_dirs) {
                     std::string ls_path = path +
 #ifdef _WIN32
@@ -477,39 +742,42 @@ std::vector<BrowserCredential> BrowserCredentials::scan() {
                         "/" + profile + "/Local Storage/leveldb";
 #endif
 
-                    // try the v2 JSON format first (multi-workspace)
+                    // try the v2 format (multi-workspace with team metadata)
                     auto teams = extractTeams(ls_path, name);
                     if (!teams.empty()) {
-                        // got teams from v2 format — fetch the shared cookie
-                        auto cookie = extractCookie(path);
-                        std::string cookie_val = cookie.value_or("");
-
                         for (auto& team : teams) {
                             team.cookie = cookie_val;
-                            results.push_back(std::move(team));
+                            // deduplicate across profiles
+                            bool dup = false;
+                            for (auto& r : results) {
+                                if (r.token == team.token) { dup = true; break; }
+                            }
+                            if (!dup) results.push_back(std::move(team));
                         }
                         LOG_INFO("got " + std::to_string(results.size()) +
                                  " workspaces from " + name + " (" + profile + ")");
-                        break;
+                        continue; // check other profiles too
                     }
 
                     // fallback: old single-token format
                     auto token = extractToken(ls_path);
                     if (!token) continue;
 
-                    auto cookie = extractCookie(path);
-
                     BrowserCredential cred;
                     cred.browser_name = name;
                     cred.token = *token;
-                    cred.cookie = cookie.value_or("");
+                    cred.cookie = cookie_val;
                     cred.team_name = "Slack";
-                    results.push_back(std::move(cred));
+                    // deduplicate
+                    bool dup = false;
+                    for (auto& r : results) {
+                        if (r.token == cred.token) { dup = true; break; }
+                    }
+                    if (!dup) results.push_back(std::move(cred));
                     LOG_INFO("got credentials from " + name + " (" + profile + ") [legacy]");
-                    break;
                 }
 
-                if (!results.empty()) break; // found what we need
+                if (!results.empty()) break; // found what we need from this browser
             } catch (const std::exception& e) {
                 LOG_WARN("error scanning " + name + ": " + e.what());
             } catch (...) {
