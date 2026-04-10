@@ -57,6 +57,7 @@ private:
     void syncBufferView();
     void syncNickList();
     void switchToBuffer(int index);
+    void showSystemMessage(const std::string& text);
 
     SDL_Window* window_ = nullptr;
     SDL_GLContext gl_context_ = nullptr;
@@ -116,6 +117,9 @@ private:
 
     // resolved auth token for image/gif downloads
     std::string resolved_token_;
+
+    // local system messages shown to user (command output, etc)
+    std::vector<ui::BufferViewMessage> system_messages_;
 
     // when editing a specific message via right-click context menu
     std::string editing_ts_;

@@ -906,28 +906,70 @@ void Application::registerCommands() {
         }
     });
 
-    commands_.registerCommand("org", "Org management: /org list|switch|connect|disconnect", [this](const input::ParsedCommand& cmd) {
+    commands_.registerCommand("org", "Org management: /org list|switch|disconnect", [this](const input::ParsedCommand& cmd) {
         if (cmd.argv.empty()) {
-            LOG_INFO("usage: /org list | /org switch <name> | /org connect | /org disconnect <name>");
+            showSystemMessage("usage: /org list | /org switch <name> | /org disconnect");
             return;
         }
         std::string sub = cmd.argv[0];
         if (sub == "list") {
-            for (auto& org : config_.get().orgs) {
-                std::string status = (client_ && client_->teamName() == org.name) ? "connected" : "not connected";
-                LOG_INFO("  " + org.name + " [" + status + "]");
+            commands_.execute("/orgs");
+        } else if (sub == "switch") {
+            if (cmd.argv.size() > 1) {
+                commands_.execute("/switch " + cmd.argv[1]);
+            } else {
+                commands_.execute("/switch");
             }
-        } else if (sub == "switch" && cmd.argv.size() > 1) {
-            LOG_INFO("multi-org switching coming soon (only single org supported for now)");
-        } else if (sub == "connect") {
-            LOG_INFO("add org to config file and restart for now");
         } else if (sub == "disconnect") {
             if (client_) { client_->disconnect(); ui_.statusBar().setConnectionState("disconnected"); }
         }
     });
 
+    commands_.registerCommand("orgs", "List available workspaces", [this](const input::ParsedCommand&) {
+        populateOrgSwitcher();
+        if (discovered_teams_.empty()) {
+            showSystemMessage("no workspaces found — try /reauth");
+            return;
+        }
+        std::string active_id = client_ ? client_->teamId() : "";
+        std::string out = "Workspaces:";
+        for (auto& team : discovered_teams_) {
+            bool active = (!active_id.empty() && team.team_id == active_id);
+            out += "\n  " + std::string(active ? "* " : "  ") + team.team_name;
+            if (!team.team_domain.empty()) out += "  (" + team.team_domain + ".slack.com)";
+            if (active) out += "  [connected]";
+        }
+        showSystemMessage(out);
+    });
+
+    commands_.registerCommand("channels", "List all channels on this workspace", [this](const input::ParsedCommand& cmd) {
+        if (!client_) { showSystemMessage("not connected"); return; }
+        auto channels = client_->getChannels(true);
+        // sort alphabetically
+        std::sort(channels.begin(), channels.end(),
+                  [](const slack::Channel& a, const slack::Channel& b) { return a.name < b.name; });
+
+        std::string filter = cmd.args;
+        std::string out = "Channels on " + client_->teamName() + ":";
+        int count = 0;
+        for (auto& ch : channels) {
+            if (ch.type == slack::ChannelType::DirectMessage ||
+                ch.type == slack::ChannelType::MultiPartyDM) continue;
+            if (!filter.empty() && ch.name.find(filter) == std::string::npos) continue;
+            std::string prefix = ch.is_member ? "#" : " ";
+            std::string suffix;
+            if (ch.is_archived) suffix = " (archived)";
+            else if (ch.is_muted) suffix = " (muted)";
+            out += "\n  " + prefix + ch.name + suffix;
+            if (ch.member_count > 0) out += "  [" + std::to_string(ch.member_count) + " members]";
+            count++;
+        }
+        out += "\n(" + std::to_string(count) + " channels)";
+        showSystemMessage(out);
+    });
+
     commands_.registerCommand("help", "Show available commands", [this](const input::ParsedCommand&) {
-        LOG_INFO("\n" + commands_.allHelp());
+        showSystemMessage(commands_.allHelp());
     });
 
     commands_.registerCommand("debug", "Toggle debug log buffer", [this](const input::ParsedCommand&) {
@@ -2071,6 +2113,22 @@ void Application::syncBufferList() {
     }
 }
 
+void Application::showSystemMessage(const std::string& text) {
+    // inject a local-only message into the current buffer view
+    // so the user can see command output in-line
+    ui::BufferViewMessage msg;
+    msg.timestamp = "--";
+    msg.nick = "*";
+    msg.text = text;
+    msg.subtype = "system";
+    msg.ts = "0";
+
+    // get current messages, append ours, re-set
+    // (hacky but works — the system message won't persist across syncs)
+    system_messages_.push_back(msg);
+    needs_message_sync_ = true;
+}
+
 void Application::syncBufferView() {
     if (!client_ || active_channel_.empty()) return;
 
@@ -2154,6 +2212,12 @@ void Application::syncBufferView() {
 
         view_msgs.push_back(std::move(vm));
     }
+
+    // append any system messages (command output)
+    for (auto& sm : system_messages_) {
+        view_msgs.push_back(sm);
+    }
+    system_messages_.clear();
 
     ui_.bufferView().setMessages(view_msgs);
 
