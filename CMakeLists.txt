@@ -71,6 +71,9 @@ if(NOT TARGET websockets_shared AND NOT TARGET websockets)
     endif()
 endif()
 
+# LevelDB (for reading Chromium localStorage)
+find_package(leveldb CONFIG QUIET)
+
 # --- header-only / small deps via FetchContent ---
 include(FetchContent)
 
@@ -130,6 +133,12 @@ target_link_libraries(conduit PRIVATE
     tomlplusplus::tomlplusplus
     GIF::GIF
 )
+
+# link leveldb if found
+if(TARGET leveldb::leveldb)
+    target_link_libraries(conduit PRIVATE leveldb::leveldb)
+    target_compile_definitions(conduit PRIVATE CONDUIT_HAS_LEVELDB=1)
+endif()
 
 # link libwebsockets — target name depends on how it was found
 if(TARGET websockets_shared)

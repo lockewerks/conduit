@@ -472,13 +472,25 @@ void Application::renderTeamChooser() {
         auto& chosen = discovered_teams_[selected_team_index_];
         LOG_INFO("user chose workspace: " + chosen.team_name);
 
-        // save to keychain so next launch goes straight in
-        KeychainStore::store("conduit", "user_token", chosen.token);
-        if (!chosen.cookie.empty()) KeychainStore::store("conduit", "d_cookie", chosen.cookie);
-        KeychainStore::store("conduit", "team_name", chosen.team_name);
-
-        auth_state_ = AuthState::None;
-        connectWithCredential(chosen);
+        if (chosen.cookie.empty()) {
+            // cookie couldn't be auto-extracted (v20 App-Bound Encryption)
+            // store the token and prompt for the cookie
+            pending_token_ = chosen.token;
+            KeychainStore::store("conduit", "user_token", chosen.token);
+            KeychainStore::store("conduit", "team_name", chosen.team_name);
+            auth_state_ = AuthState::WaitingForCookie;
+            ui_.statusBar().setConnectionState("paste d= cookie");
+            ui_.statusBar().setOrgName(chosen.team_name);
+            ui_.inputBar().setChannelName("paste your d= cookie value");
+            LOG_INFO("token found but cookie needs manual paste (v20 encryption)");
+        } else {
+            // save to keychain so next launch goes straight in
+            KeychainStore::store("conduit", "user_token", chosen.token);
+            KeychainStore::store("conduit", "d_cookie", chosen.cookie);
+            KeychainStore::store("conduit", "team_name", chosen.team_name);
+            auth_state_ = AuthState::None;
+            connectWithCredential(chosen);
+        }
     }
     ImGui::SameLine();
     if (ImGui::Button("Paste Token Instead", ImVec2(160, 0))) {
