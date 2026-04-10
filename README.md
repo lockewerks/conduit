@@ -16,25 +16,46 @@ Conduit exists because:
 
 ## What it does
 
+### Messaging
 - **Real-time messaging** via WebSocket (same connection the browser uses, not polling like a caveman)
-- **Inline images and animated GIFs** because we're not *completely* unhinged
-- **Full-color emoji** pulled straight from Slack's CDN — custom workspace emoji, animated GIFs, the works
-- **Unicode emoji rendering** via system fonts as fallback
 - **IRC-style messages** — `20:34 <alice> hey everyone` — because this is how chat should look
-- **Click-to-view images** in a full-screen overlay, click-to-toggle reactions
-- **Threads** with dedicated side panel and reply input — click thread counts to open
+- **Threads** with dedicated side panel and reply input
 - **Hover action bar** on messages — React and Reply buttons appear on hover like the real client
+- **Right-click context menus** with quick reaction emoji row, copy, pin, save, remind, mark unread
+- **Search, file upload, clipboard paste** (Ctrl+V an image, it just works)
+- **Real @mentions** — converts `@username` to Slack's `<@UID>` format so people actually get notified
+- **@mention autocomplete** — Tab completion and live popup as you type
+- **Typing indicators, presence dots, unread badges** — all the stuff you'd expect
+
+### Rich Content
+- **Block Kit rendering** — bot messages with sections, headers, dividers, code blocks, action buttons
+- **Attachment cards** — colored borders, titles, text, inline images (link unfurling, GitHub notifications, deploy bots)
+- **Inline images and animated GIFs** because we're not *completely* unhinged
+- **Full-color emoji** from Slack's CDN — custom workspace emoji, animated GIFs, the works
+- **Unicode emoji rendering** via system fonts as fallback
+
+### Multi-Workspace
+- **Auto-discovers all workspaces** from your browser — Snappy-decompresses Chrome/Edge's LevelDB to find every Slack team you're logged into
+- **Workspace chooser** on first launch when multiple workspaces found
+- **Alt+N org switcher** — hop between workspaces without restarting
+- **`/switch`** command — switch by name (`/switch skylight`) or open the picker
+- **`/orgs`** — list all available workspaces
+- **Credentials cached in OS keychain** — auto-login on subsequent launches
+
+### UI & Navigation
 - **Structured sidebar** — collapsible Channels, Direct Messages, and Apps sections
 - **DMs that actually work** — open DMs from nick list, `/msg`, `/query`, self-DM, bot conversations
-- **@mention autocomplete** — Tab completion and live popup as you type
-- **Real @mentions** — converts `@username` to Slack's `<@UID>` format so people actually get notified
-- **Search, file upload, clipboard paste** (Ctrl+V an image, it just works)
-- **Right-click context menus** with quick reaction emoji row
-- **Typing indicators, presence dots, unread badges** — all the stuff you'd expect
+- **User profiles** — click a username for full profile with title, timezone, email, presence
 - **Keyboard-driven everything** — Alt+1-9, /slash commands, tab completion, Ctrl+K command palette
 - **Draggable resizable panes** — sidebar widths adjust and persist between sessions
-- **Zero-config authentication** — steals your token from Chrome/Edge automatically, or paste it manually
 - **DPI-aware with Ctrl+/- scaling** — works on your 4K monitor and your potato laptop
+- **`/channels`** — list all channels on the current workspace, filter by name
+
+### Data & Caching
+- **SQLite-backed caching** — messages, channels, users, bookmarks, reminders, drafts, saved items
+- **Schema migrations** — database upgrades automatically when new features are added
+- **Draft persistence** — unsent messages saved per-channel across restarts
+- **Bookmarks, reminders, scheduled messages** — full API support (UI wiring in progress)
 
 ## What it doesn't do
 
@@ -42,6 +63,7 @@ Conduit exists because:
 - **Look like Slack.** That's not a bug, that's the entire point.
 - **Phone home.** No telemetry, no analytics, no "we'd love your feedback" popups.
 - **Require admin privileges.** Works with any workspace you can log into.
+- **Huddles/voice/video.** Slack's huddle protocol is proprietary and reverse-engineering it is a Sisyphean nightmare. Use the real client for calls. We're not proud; we're practical.
 - **Crash.** (Often.) (Usually.) (Look, it's C++, things happen.)
 
 ## Screenshots
@@ -54,9 +76,12 @@ It's a black terminal with colored text. Use your imagination. Or just run it.
 
 1. Log into Slack in Chrome, Edge, Brave, or any Chromium browser
 2. Build and run Conduit
-3. There is no step 3
+3. If you have multiple workspaces, pick one from the chooser
+4. If Edge/Chrome uses v20 App-Bound Encryption (most modern versions do), paste the `d` cookie when prompted:
+   - F12 → Application → Cookies → `.slack.com` → find `d` → copy value
+5. That's it. Credentials cached. Next launch is instant.
 
-Conduit automatically finds your Slack credentials from the browser's local storage and cookies. It reads the `xoxc-` token from Chrome's LevelDB (unencrypted — thanks, Google) and decrypts the `d` session cookie using Windows DPAPI. Same user, same machine, zero friction. Your token is saved to Windows Credential Manager so this only happens once.
+Conduit automatically finds your Slack credentials from the browser's local storage. It Snappy-decompresses Chrome's LevelDB blocks to extract the `localConfig_v2` JSON, parsing out per-workspace `xoxc-` tokens and team metadata. Your token is saved to Windows Credential Manager so this only happens once.
 
 *"Isn't that basically stealing credentials?"* Yes. From yourself. You're welcome.
 
@@ -252,6 +277,7 @@ If you've used WeeChat or irssi, you already know most of these. If you haven't,
 |-----|-------------|
 | `Alt+1..9` | Switch buffers (because tabs are for browsers) |
 | `Alt+A` | Jump to next unread |
+| `Alt+N` | Open workspace switcher |
 | `Alt+Left/Right` | Navigate buffers |
 | `Alt+Up/Down` | Navigate to next/prev unread buffer |
 | `Ctrl+K` | Command palette (fuzzy search channels and commands) |
@@ -296,7 +322,10 @@ If you've used WeeChat or irssi, you already know most of these. If you haven't,
 /pin                Pin message
 /unpin              Unpin message
 /set key=value      Change a setting
-/org list           List orgs
+/switch             Open workspace switcher (or /switch name)
+/orgs               List available workspaces
+/channels           List all channels (or /channels filter)
+/reauth             Clear cached credentials and re-scan browser
 /help               Show all commands
 ```
 
@@ -305,33 +334,38 @@ If you've used WeeChat or irssi, you already know most of these. If you haven't,
 For the three people who care:
 
 - **C++20** because we have standards (pun intended)
-- **Dear ImGui** for the UI (immediate mode, 60fps, ~12K lines of actual code)
+- **Dear ImGui** for the UI (immediate mode, 60fps, ~15K lines of actual code)
 - **SDL2** for windowing (not Electron, not Qt, not wxWidgets)
 - **OpenGL 3.3** for rendering (your integrated GPU handles this fine)
 - **libcurl** for REST API calls
 - **libwebsockets** for the real-time WebSocket connection
-- **SQLite3** for local message/channel/user caching
+- **SQLite3** for local message/channel/user caching (with schema migrations)
+- **LevelDB** (via vcpkg) for reading Chromium localStorage
 - **nlohmann/json** for JSON parsing
 - **stb_image/stb_image_write** for image decoding/encoding
 - **giflib** for animated GIF frame decoding
 - **toml++** for config file parsing
 - **Lekton Nerd Font Mono** for the typography
+- A **hand-rolled Snappy decompressor** because Chrome compresses localStorage and we need to read it without asking nicely
 
-Total dependency footprint: ~15MB. Electron's `node_modules`: lol.
+Total dependency footprint: ~18MB. Electron's `node_modules`: lol.
 
 ## How Authentication Works
 
 Conduit supports three authentication methods, tried in this order:
 
 1. **Keychain** — checks Windows Credential Manager for a previously saved token
-2. **Browser snatch** — scans Chrome, Edge, Brave, Vivaldi, and other Chromium browsers for Slack credentials:
-   - Reads the `xoxc-` token from `localStorage` (LevelDB files, unencrypted)
-   - Reads the `d` session cookie from the Cookies SQLite database
-   - Decrypts the cookie using DPAPI (Windows) since it's the same user account
-   - Saves both to the OS credential store for next time
+2. **Browser heist** — scans Chrome, Edge, Brave, Vivaldi, and other Chromium browsers for Slack credentials:
+   - Reads `.ldb` SSTable files from Chrome's `Local Storage/leveldb` directory
+   - Brute-force locates the Snappy compression block boundary near `localConfig_v2`
+   - Decompresses the block to get clean JSON with per-workspace `xoxc-` tokens
+   - Extracts team names, domains, and tokens for every workspace you're logged into
+   - Attempts to decrypt the `d` session cookie (DPAPI for v10, gives up gracefully on v20 App-Bound Encryption)
+   - Shows a workspace chooser if multiple teams found
+   - Saves to OS credential store for next time
 3. **Manual paste** — asks you to paste the token and cookie from the browser dev tools
 
-The browser scanning is completely local. Nothing leaves your machine. We're reading files that belong to you, on your computer, as your user account. It's not a hack, it's just reading your own data. Chrome stores it unencrypted. We didn't make the rules.
+The browser scanning is completely local. Nothing leaves your machine. We're reading files that belong to you, on your computer, as your user account. Chrome stores it in Snappy-compressed LevelDB blocks. We decompress it. The NSA probably thinks this is adorable.
 
 ## How the WebSocket Works
 
@@ -345,7 +379,7 @@ Messages, reactions, typing indicators, presence changes — they all arrive via
 A: It uses Slack's public API with your own credentials. It's as legal as opening Slack in a browser. Which is what you're already doing. Relax.
 
 **Q: It reads my browser data??**
-A: YOUR browser data. On YOUR computer. Running as YOUR user account. Chrome stores your Slack token in plaintext in a LevelDB file. We just read it so you don't have to open dev tools and paste things like a barbarian. If this bothers you, wait until you find out what Chrome extensions can access.
+A: YOUR browser data. On YOUR computer. Running as YOUR user account. Chrome stores your Slack token in Snappy-compressed LevelDB blocks. We brute-force the block boundary, decompress it, and parse the JSON. If this sounds dramatic, wait until you find out what Chrome extensions can access.
 
 **Q: Will Slack break this?**
 A: Maybe. They could change the WebSocket protocol or block third-party clients. But they've been running this same WebSocket endpoint for years and millions of connections depend on it. We'll cross that bridge when we come to it.
@@ -367,6 +401,12 @@ A: Yes. Full-color emoji from Slack's CDN, custom workspace emoji included. Hove
 
 **Q: Does it support file uploads?**
 A: Yes. Ctrl+V to paste from clipboard, drag-and-drop files onto the window, or `/upload path/to/file`.
+
+**Q: Does it support multiple workspaces?**
+A: Yes. It auto-discovers all workspaces from your browser. Use Alt+N or `/switch` to hop between them. Each workspace gets its own SQLite database.
+
+**Q: What about huddles/voice/video?**
+A: No. Slack's huddle protocol involves proprietary signaling over a Janus SFU with Snappy-compressed... actually, let's not go there again. Use the real Slack client for calls.
 
 **Q: It crashed.**
 A: Open an issue. Include the log file at `C:\Users\<you>\conduit_debug.log`. Or don't. I'll probably find it myself eventually.
