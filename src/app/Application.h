@@ -13,6 +13,7 @@
 #include "render/GifRenderer.h"
 #include "render/EmojiRenderer.h"
 #include "app/BrowserCredentials.h"
+#include "ui/OrgSwitcher.h"
 
 #include <SDL.h>
 #include <chrono>
@@ -108,6 +109,10 @@ private:
 
     void renderTeamChooser();
     void connectWithCredential(const BrowserCredential& cred);
+    void switchToOrg(const BrowserCredential& cred);
+    void populateOrgSwitcher();
+
+    ui::OrgSwitcher org_switcher_;
 
     // resolved auth token for image/gif downloads
     std::string resolved_token_;

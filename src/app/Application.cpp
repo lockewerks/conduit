@@ -428,6 +428,10 @@ void Application::connectWithCredential(const BrowserCredential& cred) {
             if (!custom.empty()) {
                 emoji_renderer_.setCustomEmoji(custom);
             }
+            // pre-scan browser for the org switcher so Alt+N works
+            if (discovered_teams_.empty()) {
+                discovered_teams_ = BrowserCredentials::scan();
+            }
         } else {
             LOG_ERROR("failed to connect to " + name);
         }
@@ -501,6 +505,75 @@ void Application::renderTeamChooser() {
     }
 
     ImGui::End();
+}
+
+void Application::populateOrgSwitcher() {
+    // if we haven't scanned browsers yet, do it now
+    if (discovered_teams_.empty()) {
+        discovered_teams_ = BrowserCredentials::scan();
+    }
+
+    std::vector<ui::OrgSwitcher::OrgEntry> entries;
+    std::string active_name = client_ ? client_->teamName() : "";
+
+    for (auto& team : discovered_teams_) {
+        ui::OrgSwitcher::OrgEntry entry;
+        entry.team_id = team.team_id;
+        entry.name = team.team_name;
+        entry.is_active = (team.team_name == active_name ||
+                           team.team_id == (client_ ? client_->teamId() : ""));
+        entries.push_back(entry);
+    }
+
+    org_switcher_.setOrgs(entries);
+}
+
+void Application::switchToOrg(const BrowserCredential& cred) {
+    LOG_INFO("switching to workspace: " + cred.team_name);
+
+    // disconnect current session
+    if (client_) {
+        client_->disconnect();
+        client_.reset();
+    }
+    msg_cache_.reset();
+    db_.reset();
+
+    // clear UI state
+    active_channel_.clear();
+    active_channel_name_.clear();
+    needs_channel_sync_ = true;
+    needs_message_sync_ = true;
+    ui_.bufferView().setMessages({});
+    ui_.bufferView().clearSelection();
+
+    // need the cookie — check keychain first
+    BrowserCredential resolved = cred;
+    if (resolved.cookie.empty()) {
+        auto stored_cookie = KeychainStore::retrieve("conduit", "d_cookie");
+        if (stored_cookie) {
+            resolved.cookie = *stored_cookie;
+        }
+    }
+
+    if (resolved.cookie.empty()) {
+        // no cookie available — prompt for it
+        pending_token_ = resolved.token;
+        KeychainStore::store("conduit", "user_token", resolved.token);
+        KeychainStore::store("conduit", "team_name", resolved.team_name);
+        auth_state_ = AuthState::WaitingForCookie;
+        ui_.statusBar().setConnectionState("paste d= cookie");
+        ui_.statusBar().setOrgName(resolved.team_name);
+        ui_.inputBar().setChannelName("paste your d= cookie value");
+        return;
+    }
+
+    // update keychain with new active team
+    KeychainStore::store("conduit", "user_token", resolved.token);
+    KeychainStore::store("conduit", "d_cookie", resolved.cookie);
+    KeychainStore::store("conduit", "team_name", resolved.team_name);
+
+    connectWithCredential(resolved);
 }
 
 // ---- Slash commands ----
@@ -655,6 +728,25 @@ void Application::registerCommands() {
         client_->disconnect();
         ui_.statusBar().setConnectionState("reconnecting...");
         pool_->enqueue([this]() { client_->connect(); });
+    });
+
+    commands_.registerCommand("switch", "Switch workspace (Alt+N)", [this](const input::ParsedCommand& cmd) {
+        if (!cmd.args.empty()) {
+            // /switch <name> — switch directly by name
+            populateOrgSwitcher();
+            for (auto& team : discovered_teams_) {
+                if (team.team_name.find(cmd.args) != std::string::npos ||
+                    team.team_domain.find(cmd.args) != std::string::npos) {
+                    switchToOrg(team);
+                    return;
+                }
+            }
+            LOG_WARN("workspace not found: " + cmd.args);
+        } else {
+            // /switch — open the switcher
+            populateOrgSwitcher();
+            org_switcher_.open();
+        }
     });
 
     commands_.registerCommand("reauth", "Clear cached credentials and re-scan browser", [this](const input::ParsedCommand&) {
@@ -948,8 +1040,25 @@ void Application::setupKeybindings() {
             ui_.threadPanel().setMessages(replies);
         });
     });
+    keys_.onAction("org_switcher", [this]() {
+        populateOrgSwitcher();
+        org_switcher_.open();
+    });
+
+    org_switcher_.setSelectCallback([this](const ui::OrgSwitcher::OrgEntry& org) {
+        // find the matching credential from discovered teams
+        for (auto& team : discovered_teams_) {
+            if (team.team_id == org.team_id || team.team_name == org.name) {
+                switchToOrg(team);
+                return;
+            }
+        }
+        LOG_WARN("couldn't find credentials for team: " + org.name);
+    });
+
     keys_.onAction("escape", [this]() {
-        if (ui_.emojiPicker().isOpen()) ui_.emojiPicker().close();
+        if (org_switcher_.isOpen()) org_switcher_.close();
+        else if (ui_.emojiPicker().isOpen()) ui_.emojiPicker().close();
         else if (ui_.searchPanel().isOpen()) ui_.searchPanel().close();
         else if (ui_.commandPalette().isOpen()) ui_.commandPalette().close();
         else if (ui_.threadPanel().isOpen()) ui_.threadPanel().close();
@@ -1211,6 +1320,12 @@ void Application::run() {
 
         // team chooser overlay (shown when multiple workspaces found)
         renderTeamChooser();
+
+        // org switcher overlay (Alt+N)
+        if (org_switcher_.isOpen()) {
+            org_switcher_.render(0, 0, (float)window_width_, (float)window_height_,
+                                ui_.theme());
+        }
 
         // right-click context menu actions
         if (ui_.wantsPasteImage()) {
