@@ -428,14 +428,19 @@ void Application::connectWithCredential(const BrowserCredential& cred) {
             if (!custom.empty()) {
                 emoji_renderer_.setCustomEmoji(custom);
             }
-            // pre-scan browser for the org switcher so Alt+N works
-            if (discovered_teams_.empty()) {
-                discovered_teams_ = BrowserCredentials::scan();
-            }
         } else {
             LOG_ERROR("failed to connect to " + name);
         }
     });
+
+    // pre-scan browser for the org switcher on a separate thread
+    // so it doesn't block the connection
+    if (discovered_teams_.empty()) {
+        pool_->enqueue([this]() {
+            discovered_teams_ = BrowserCredentials::scan();
+            LOG_INFO("org switcher ready: " + std::to_string(discovered_teams_.size()) + " workspaces");
+        });
+    }
 }
 
 void Application::renderTeamChooser() {

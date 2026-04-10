@@ -206,26 +206,29 @@ void SlackClient::bootstrapData() {
     auto users = fetchPaginated<User>("users.list", "members");
     user_cache_.loadFromAPI(users);
 
-    // fetch user groups
-    auto groups = getUserGroups(true);
-    user_group_cache_.loadFromAPI(groups);
+    LOG_INFO("bootstrap complete: " + std::to_string(channels.size()) + " channels, " +
+             std::to_string(users.size()) + " users");
 
-    // fetch DND status
-    dnd_status_ = getDndStatus();
-
-    // load cached data for new features from DB
+    // load cached data for new features from DB (fast, local only)
     bookmark_cache_.loadFromDB();
     reminder_cache_.loadFromDB();
     draft_store_.loadFromDB();
     saved_item_cache_.loadFromDB();
 
-    // fetch fresh reminders + saved items (small payloads)
-    auto reminders = getReminders();
-    reminder_cache_.loadFromAPI(reminders);
+    // fetch additional data — these are non-critical and may fail
+    // depending on token scopes, so don't let them block startup
+    try {
+        auto groups = getUserGroups(true);
+        user_group_cache_.loadFromAPI(groups);
+    } catch (...) { LOG_WARN("user groups fetch failed (non-critical)"); }
 
-    LOG_INFO("bootstrap complete: " + std::to_string(channels.size()) + " channels, " +
-             std::to_string(users.size()) + " users, " +
-             std::to_string(groups.size()) + " user groups");
+    try { dnd_status_ = getDndStatus(); }
+    catch (...) { LOG_WARN("DND status fetch failed (non-critical)"); }
+
+    try {
+        auto reminders = getReminders();
+        reminder_cache_.loadFromAPI(reminders);
+    } catch (...) { LOG_WARN("reminders fetch failed (non-critical)"); }
 }
 
 template <typename T>
