@@ -1,6 +1,18 @@
+<div align="center">
+
+<img src="assets/conduit.ico" width="96" alt="Conduit">
+
 # Conduit
 
 **A Slack client for people who think 1.2GB of RAM for a chat app is a war crime.**
+
+[![release](https://img.shields.io/github/v/release/lockewerks/conduit?style=flat-square&color=d6262a)](https://github.com/lockewerks/conduit/releases)
+[![license](https://img.shields.io/badge/license-GPLv3-d6262a?style=flat-square)](LICENSE)
+![platform](https://img.shields.io/badge/platform-C%2B%2B20-d6262a?style=flat-square)
+
+</div>
+
+---
 
 Conduit is a WeeChat-style Slack client built in C++ with Dear ImGui. It looks like you're SSH'd into a server from 2003. It renders inline images and animated GIFs. It connects via the same WebSocket the browser uses. It uses about 40MB of RAM. The Slack desktop client is currently crying in the corner.
 
